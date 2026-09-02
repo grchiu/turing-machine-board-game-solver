@@ -123,6 +123,7 @@ const Round: FC<Props> = ({ round, index, speculateMode }) => {
               }
               value={code.digit}
               onChange={(value) => {
+                dispatch(alertActions.closeAlert());
                 dispatch(
                   roundsActions.updateCodeDigit({
                     index,
