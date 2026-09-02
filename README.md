@@ -25,9 +25,10 @@ Other useful links:
 
 ## Changes in This Fork
 
-This fork adds an active strategy search for classic puzzles. Instead of only
-checking deductions entered by the player, the solver can recommend the next
-code and verifier that produce the best guaranteed path to a solution.
+This fork adds an active strategy search for classic and extreme puzzles.
+Instead of only checking deductions entered by the player, the solver can
+recommend the next code and verifier that produce the best guaranteed path to
+a solution.
 
 The main additions are:
 
@@ -44,17 +45,18 @@ The main additions are:
   puzzle without displaying the hidden solution in advance.
 - Updated WASM bindings, worker messages, tests, and GitHub Pages deployment.
 
-Active search and simulation currently support classic puzzles only. The
-original passive deduction tools continue to support the modes implemented by
-the upstream solver.
+Active search and simulation support classic and extreme puzzles. Nightmare
+puzzles remain available through the original passive deduction tools.
 
 ## Minimax Search
 
 ### Worlds
 
 A **world** is one possible assignment of a hidden criterion to every verifier
-card. Before searching, the solver enumerates the Cartesian product of the
-criteria cards and keeps only worlds that:
+card. In extreme mode, each verifier's choices are drawn from both of its
+displayed criteria cards, since either card can be the decoy. Before searching,
+the solver enumerates the Cartesian product of those choices and keeps only
+worlds that:
 
 1. Produce exactly one solution code.
 2. Do not contain a verifier made redundant by all the others.
@@ -102,8 +104,11 @@ currently assume that each live world is equally likely.
 
 Expected-value optimization can be disabled with
 `OPTIMIZE_EXPECTED_VALUE` in
-`frontend/src/components/ActiveSearch.tsx`. Live verifier-category updates can
-be switched on or off with the **Auto Deductions** toolbar button.
+`frontend/src/components/ActiveSearch.tsx`. Its optional search is bounded by
+`EXPECTED_VALUE_NODE_BUDGET` and `EXPECTED_VALUE_TIME_BUDGET_MS`; reaching
+either limit falls back to the already proven optimal worst-case plan. Live
+verifier-category updates can be switched on or off with the **Auto
+Deductions** toolbar button.
 
 ### Search Strategy
 
@@ -200,7 +205,7 @@ CI=true npm test -- --runInBand
 - [x] Deductions based on machine answers
 - [x] Classic and extreme passive solving
 - [x] Interactive frontend with a WASM solver and web worker
-- [x] Active classic-puzzle strategy search
+- [x] Active classic and extreme-puzzle strategy search
 - [x] Adaptive round and verifier-check minimax
 - [x] Expected-value tie-breaking
 - [x] Live verifier-category deductions

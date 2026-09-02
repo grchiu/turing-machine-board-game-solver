@@ -5,7 +5,7 @@ import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
-import { searchClassic, SearchProgress, SearchResult } from "deductions";
+import { searchStandard, SearchProgress, SearchResult } from "deductions";
 import { useAppDispatch } from "hooks/useAppDispatch";
 import { useAppSelector } from "hooks/useAppSelector";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -17,9 +17,12 @@ const initialProgress: SearchProgress = {
   checks: 0,
   nodes: 0,
   memoStates: 0,
+  optimizingExpectedValue: false,
 };
 
 const OPTIMIZE_EXPECTED_VALUE = true;
+const EXPECTED_VALUE_NODE_BUDGET = 30_000_000;
+const EXPECTED_VALUE_TIME_BUDGET_MS = 30_000;
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value);
@@ -76,10 +79,13 @@ function getRecordedScore(state: RootState) {
 export function ActiveSearch() {
   const dispatch = useAppDispatch();
   const state = useAppSelector((currentState) => currentState);
-  const isClassic =
+  const isStandardMode =
     state.comments.length > 0 &&
     !state.comments[0].nightmare &&
-    state.comments[0].criteriaCards.length === 1;
+    state.comments.every(
+      ({ criteriaCards }) =>
+        criteriaCards.length === 1 || criteriaCards.length === 2
+    );
   const [isSearching, setIsSearching] = useState(false);
   const [progress, setProgress] = useState(initialProgress);
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -125,11 +131,13 @@ export function ActiveSearch() {
     setSimulationBound(null);
     setProgress(initialProgress);
     try {
-      const searchResult = await searchClassic(
+      const searchResult = await searchStandard(
         state,
         setProgress,
         undefined,
-        OPTIMIZE_EXPECTED_VALUE
+        OPTIMIZE_EXPECTED_VALUE,
+        EXPECTED_VALUE_NODE_BUDGET,
+        EXPECTED_VALUE_TIME_BUDGET_MS
       );
       if (currentStateKey.current === stateKeyAtStart) {
         setResult(searchResult);
@@ -169,11 +177,13 @@ export function ActiveSearch() {
         const searchResult =
           step === 0
             ? firstResult
-            : await searchClassic(
+            : await searchStandard(
                 store.getState(),
                 setProgress,
                 answerCode,
-                OPTIMIZE_EXPECTED_VALUE
+                OPTIMIZE_EXPECTED_VALUE,
+                EXPECTED_VALUE_NODE_BUDGET,
+                EXPECTED_VALUE_TIME_BUDGET_MS
               );
         if (!searchResult.answerMatchesLiveWorld) {
           setError(`${answer} is not a live answer for these checks.`);
@@ -245,7 +255,7 @@ export function ActiveSearch() {
           variant="contained"
           size="large"
           fullWidth
-          disabled={!isClassic || isSearching}
+          disabled={!isStandardMode || isSearching}
           startIcon={
             isSearching ? (
               <CircularProgress size={20} color="inherit" />
@@ -274,10 +284,12 @@ export function ActiveSearch() {
           }}
           aria-live="polite"
         >
-          {!isClassic && (
-            <Typography variant="body2">Classic puzzles only.</Typography>
+          {!isStandardMode && (
+            <Typography variant="body2">
+              Nightmare puzzles are not supported yet.
+            </Typography>
           )}
-          {isClassic && !isSearching && !result && !error && (
+          {isStandardMode && !isSearching && !result && !error && (
             <Typography variant="body2">
               Ready to find the next verifier check.
             </Typography>
@@ -285,11 +297,14 @@ export function ActiveSearch() {
           {isSearching && (
             <>
               <Typography variant="body1">
-                {simulationStep || (progress.rounds === 0 && progress.checks === 0
-                  ? "Building live worlds..."
-                  : progress.checks === 0
-                    ? `Proving ${plural(progress.rounds, "round")}...`
-                    : `Proving ${plural(progress.rounds, "round")} / ${plural(progress.checks, "check")}...`)}
+                {simulationStep ||
+                  (progress.optimizingExpectedValue
+                    ? "Optimizing the average case..."
+                    : progress.rounds === 0 && progress.checks === 0
+                      ? "Building live worlds..."
+                      : progress.checks === 0
+                        ? `Proving ${plural(progress.rounds, "round")}...`
+                        : `Proving ${plural(progress.rounds, "round")} / ${plural(progress.checks, "check")}...`)}
               </Typography>
               <Typography variant="body2">
                 {formatNumber(progress.nodes)} search nodes
@@ -337,6 +352,11 @@ export function ActiveSearch() {
                 <Typography variant="body2">
                   Average: {average(result.expectedRounds, "more round")},{" "}
                   {average(result.expectedChecks, "check")}
+                </Typography>
+              )}
+              {result.expectedValueLimitReached && (
+                <Typography variant="body2">
+                  Average tie-break capped; worst case remains optimal.
                 </Typography>
               )}
               <Typography variant="caption" color="text.secondary">

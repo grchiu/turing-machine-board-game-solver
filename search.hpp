@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <unordered_map>
@@ -19,6 +20,7 @@ struct search_progress_t {
   uint16_t checks;
   uint64_t nodes;
   size_t memoStates;
+  bool optimizingExpectedValue;
 };
 
 using search_progress_callback_t =
@@ -55,20 +57,21 @@ struct search_result_t {
   bool answerResultKnown = false;
   bool answerResult = false;
   bool expectedValueOptimized = false;
+  bool expectedValueLimitReached = false;
   double expectedRounds = 0;
   double expectedChecks = 0;
   uint64_t nodes = 0;
   size_t memoStates = 0;
 };
 
-struct classic_world_t {
+struct standard_world_t {
   std::vector<verifier_t> verifiers;
   uint8_t solutionIdx;
 };
 
-const auto get_classic_worlds = [](const std::vector<card_t> &game,
-                                   const std::vector<query_t> &queries) {
-  auto worlds = std::vector<classic_world_t>{};
+const auto get_standard_worlds = [](const std::vector<card_t> &game,
+                                    const std::vector<query_t> &queries) {
+  auto worlds = std::vector<standard_world_t>{};
   cartesianProduct(game, [&worlds, &queries](
                              const std::vector<verifier_t> &combination) {
     if (!has_single_solution(combination) ||
@@ -84,7 +87,7 @@ const auto get_classic_worlds = [](const std::vector<card_t> &game,
       }
     }
 
-    worlds.push_back(classic_world_t{
+    worlds.push_back(standard_world_t{
         combination,
         static_cast<uint8_t>(find_solution_idx(get_solution(combination))),
     });
@@ -97,7 +100,7 @@ namespace search_detail {
 using state_t = std::vector<uint64_t>;
 
 struct node_key_t {
-  state_t worlds;
+  size_t worlds;
   bool active;
   uint8_t codeIdx;
   uint8_t checkedVerifierMask;
@@ -111,11 +114,7 @@ struct node_key_t {
 
 struct node_hash_t {
   size_t operator()(const node_key_t &node) const {
-    size_t seed = node.worlds.size();
-    for (const auto word : node.worlds) {
-      seed ^= std::hash<uint64_t>{}(word) + 0x9e3779b9 + (seed << 6) +
-              (seed >> 2);
-    }
+    size_t seed = std::hash<size_t>{}(node.worlds);
     seed ^= static_cast<size_t>(node.active) << 1;
     seed ^= static_cast<size_t>(node.codeIdx) << 8;
     seed ^= static_cast<size_t>(node.checkedVerifierMask) << 16;
@@ -162,20 +161,24 @@ struct expected_result_t {
   uint64_t totalChecks = 0;
 };
 
-class classic_search_t {
+class standard_search_t {
 public:
-  classic_search_t(const std::vector<classic_world_t> &worlds,
+  standard_search_t(const std::vector<standard_world_t> &worlds,
                    size_t numVerifiers, round_context_t initialRound,
                    search_progress_callback_t progressCallback,
                    std::optional<uint8_t> answerIdx,
                    bool optimizeExpectedValue,
-                   std::optional<std::vector<verifier_t>> simulationVerifiers)
+                   std::optional<std::vector<verifier_t>> simulationVerifiers,
+                   uint64_t expectedValueNodeBudget,
+                   uint32_t expectedValueTimeBudgetMs)
       : worlds_(worlds), numVerifiers_(numVerifiers),
         initialRound_(initialRound),
         progressCallback_(std::move(progressCallback)),
         answerIdx_(answerIdx),
         optimizeExpectedValue_(optimizeExpectedValue),
         simulationVerifiers_(std::move(simulationVerifiers)),
+        expectedValueNodeBudget_(expectedValueNodeBudget),
+        expectedValueTimeBudgetMs_(expectedValueTimeBudgetMs),
         wordCount_((worlds.size() + 63) / 64) {
     atomicGreenMasks_.resize(NUM_CODES * numVerifiers_,
                              state_t(wordCount_, 0));
@@ -268,8 +271,22 @@ public:
       return result;
     }
     if (optimizeExpectedValue_) {
+      expectedValueSearchActive_ = true;
+      expectedValueNodeLimit_ =
+          expectedValueNodeBudget_ == 0 ||
+                  expectedValueNodeBudget_ >
+                      std::numeric_limits<uint64_t>::max() - nodes_
+              ? std::numeric_limits<uint64_t>::max()
+              : nodes_ + expectedValueNodeBudget_;
+      expectedValueDeadline_ =
+          std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(expectedValueTimeBudgetMs_);
+      nextExpectedValueTimeCheckNode_ = nodes_;
+      reportProgress();
       const auto expectedPlan = optimizeExpectedValueWithinBudgets(
           root, initialRound_, optimalRoundCount, targetChecks_);
+      expectedValueSearchActive_ = false;
+      result.expectedValueLimitReached = expectedValueLimitReached_;
       if (expectedPlan.solvable) {
         plan.action = expectedPlan.action;
         result.expectedValueOptimized = true;
@@ -358,7 +375,8 @@ private:
   }
 
   uint64_t minimumExpectedChecks(const state_t &state) {
-    const auto memoized = expectedCheckLowerBoundMemo_.find(state);
+    const auto stateId = getStateId(state);
+    const auto memoized = expectedCheckLowerBoundMemo_.find(stateId);
     if (memoized != expectedCheckLowerBoundMemo_.end()) {
       return memoized->second;
     }
@@ -388,7 +406,7 @@ private:
       total += combined;
       queue.push(combined);
     }
-    expectedCheckLowerBoundMemo_[state] = total;
+    expectedCheckLowerBoundMemo_[stateId] = total;
     return total;
   }
 
@@ -510,10 +528,15 @@ private:
                              (uint8_t{1} << action.verifierIdx))};
   }
 
-  node_key_t makeNode(const state_t &state,
-                      const round_context_t &round) const {
+  size_t getStateId(const state_t &state) {
+    const auto stateIt = stateIds_.try_emplace(state, stateIds_.size()).first;
+    return stateIt->second;
+  }
+
+  node_key_t makeNode(const state_t &state, const round_context_t &round) {
     return node_key_t{
-        state, round.active, round.codeIdx, round.checkedVerifierMask};
+        getStateId(state), round.active, round.codeIdx,
+        round.checkedVerifierMask};
   }
 
   bool canSolveInRounds(const state_t &state,
@@ -646,6 +669,9 @@ private:
   expected_result_t optimizeExpectedValueWithinBudgets(
       const state_t &state, const round_context_t &round, uint8_t rounds,
       uint16_t checks) {
+    if (expectedValueBudgetExhausted()) {
+      return expected_result_t{};
+    }
     nodes_ += 1;
     maybeReportProgress();
 
@@ -685,7 +711,13 @@ private:
           !canSolveWithinBudgets(candidate.red, childRound, childRounds,
                                  childChecks)
                .solvable) {
+        if (expectedValueBudgetExhausted()) {
+          return expected_result_t{};
+        }
         continue;
+      }
+      if (expectedValueBudgetExhausted()) {
+        return expected_result_t{};
       }
 
       const auto checkLowerBound =
@@ -697,8 +729,14 @@ private:
 
       const auto green = optimizeExpectedValueWithinBudgets(
           candidate.green, childRound, childRounds, childChecks);
+      if (expectedValueBudgetExhausted()) {
+        return expected_result_t{};
+      }
       const auto red = optimizeExpectedValueWithinBudgets(
           candidate.red, childRound, childRounds, childChecks);
+      if (expectedValueBudgetExhausted()) {
+        return expected_result_t{};
+      }
       if (!green.solvable || !red.solvable) {
         continue;
       }
@@ -718,6 +756,25 @@ private:
 
     memo[node] = best;
     return best;
+  }
+
+  bool expectedValueBudgetExhausted() {
+    if (!expectedValueSearchActive_) {
+      return false;
+    }
+    if (nodes_ >= expectedValueNodeLimit_) {
+      expectedValueLimitReached_ = true;
+      return true;
+    }
+    if (expectedValueTimeBudgetMs_ > 0 &&
+        nodes_ >= nextExpectedValueTimeCheckNode_) {
+      nextExpectedValueTimeCheckNode_ = nodes_ + 16384;
+      if (std::chrono::steady_clock::now() >= expectedValueDeadline_) {
+        expectedValueLimitReached_ = true;
+        return true;
+      }
+    }
+    return false;
   }
 
   size_t memoStateCount() const {
@@ -748,17 +805,25 @@ private:
   void reportProgress() const {
     if (progressCallback_) {
       progressCallback_(search_progress_t{
-          targetRounds_, targetChecks_, nodes_, memoStateCount()});
+          targetRounds_, targetChecks_, nodes_, memoStateCount(),
+          expectedValueSearchActive_});
     }
   }
 
-  const std::vector<classic_world_t> &worlds_;
+  const std::vector<standard_world_t> &worlds_;
   size_t numVerifiers_;
   round_context_t initialRound_;
   search_progress_callback_t progressCallback_;
   std::optional<uint8_t> answerIdx_;
   bool optimizeExpectedValue_;
   std::optional<std::vector<verifier_t>> simulationVerifiers_;
+  uint64_t expectedValueNodeBudget_;
+  uint32_t expectedValueTimeBudgetMs_;
+  uint64_t expectedValueNodeLimit_ = std::numeric_limits<uint64_t>::max();
+  uint64_t nextExpectedValueTimeCheckNode_ = 0;
+  std::chrono::steady_clock::time_point expectedValueDeadline_{};
+  bool expectedValueSearchActive_ = false;
+  bool expectedValueLimitReached_ = false;
   size_t wordCount_;
   std::vector<state_t> atomicGreenMasks_;
   std::unordered_map<
@@ -773,8 +838,8 @@ private:
       uint32_t,
       std::unordered_map<node_key_t, expected_result_t, node_hash_t>>
       expectedValueMemo_;
-  std::unordered_map<state_t, uint64_t, state_hash_t>
-      expectedCheckLowerBoundMemo_;
+  std::unordered_map<state_t, size_t, state_hash_t> stateIds_;
+  std::unordered_map<size_t, uint64_t> expectedCheckLowerBoundMemo_;
   uint64_t nodes_ = 0;
   uint8_t targetRounds_ = 0;
   uint16_t targetChecks_ = 0;
@@ -784,7 +849,7 @@ private:
 
 } // namespace search_detail
 
-const auto search_classic = [](const std::vector<card_t> &game,
+const auto search_standard = [](const std::vector<card_t> &game,
                                const std::vector<query_t> &queries,
                                round_context_t initialRound = {},
                                search_progress_callback_t progressCallback =
@@ -792,8 +857,11 @@ const auto search_classic = [](const std::vector<card_t> &game,
                                std::optional<code_t> answer = std::nullopt,
                                bool optimizeExpectedValue = false,
                                std::optional<std::vector<uint8_t>>
-                                   simulationCriteriaIndices = std::nullopt) {
-  const auto worlds = get_classic_worlds(game, queries);
+                                   simulationCriteriaIndices = std::nullopt,
+                               uint64_t expectedValueNodeBudget = 0,
+                               uint32_t expectedValueTimeBudgetMs = 0,
+                               bool oneShotWorker = false) {
+  const auto worlds = get_standard_worlds(game, queries);
   auto answerIdx = std::optional<uint8_t>{};
   if (answer) {
     answerIdx = static_cast<uint8_t>(
@@ -823,8 +891,16 @@ const auto search_classic = [](const std::vector<card_t> &game,
       answerIdx = static_cast<uint8_t>(find_solution_idx(solution));
     }
   }
-  auto search = search_detail::classic_search_t{
+  auto search = std::make_unique<search_detail::standard_search_t>(
       worlds, game.size(), initialRound, std::move(progressCallback),
-      answerIdx, optimizeExpectedValue, std::move(simulationVerifiers)};
-  return search.run();
+      answerIdx, optimizeExpectedValue, std::move(simulationVerifiers),
+      expectedValueNodeBudget, expectedValueTimeBudgetMs);
+  const auto result = search->run();
+  if (oneShotWorker) {
+    // The worker is terminated after this result. Let that release its linear
+    // memory in one operation instead of freeing hundreds of thousands of memo
+    // entries individually in WebAssembly.
+    search.release();
+  }
+  return result;
 };

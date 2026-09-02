@@ -10,7 +10,7 @@ using json = nlohmann::json;
 
 EM_JS(void, emit_search_progress,
       (uint32_t searchId, uint8_t rounds, uint16_t checks, double nodes,
-       uint32_t memoStates), {
+       uint32_t memoStates, bool optimizingExpectedValue), {
         self.postMessage({
           type: "search_progress",
           id: searchId,
@@ -18,8 +18,15 @@ EM_JS(void, emit_search_progress,
           checks: checks,
           nodes: nodes,
           memoStates: memoStates,
+          optimizingExpectedValue: optimizingExpectedValue,
         });
       });
+
+EM_JS(void, emit_search_result, (const char *resultJson), {
+  const result = JSON.parse(UTF8ToString(resultJson));
+  result.type = "result";
+  self.postMessage(result);
+});
 
 int wasm_json(char *input, char *output, const std::function<json(json)> &foo) {
   json data = json::parse(input);
@@ -136,13 +143,20 @@ extern "C" EMSCRIPTEN_KEEPALIVE int evaluate_verifier_wasm(char *input,
   });
 }
 
-extern "C" EMSCRIPTEN_KEEPALIVE int search_classic_wasm(char *input,
-                                                         char *output) {
+extern "C" EMSCRIPTEN_KEEPALIVE int search_standard_wasm(char *input,
+                                                          char *output) {
   return wasm_json(input, output, [](const json &data) {
-    const auto cardIds = data["cards"].get<std::vector<uint8_t>>();
+    const auto cardSlots =
+        data["cards"].get<std::vector<std::vector<uint8_t>>>();
     auto game = std::vector<card_t>{};
-    for (const auto cardId : cardIds) {
-      game.push_back(all_cards[cardId]);
+    game.reserve(cardSlots.size());
+    for (const auto &cardIds : cardSlots) {
+      auto verifierOptions = card_t{};
+      for (const auto cardId : cardIds) {
+        const auto &card = all_cards[cardId];
+        verifierOptions.insert(verifierOptions.end(), card.begin(), card.end());
+      }
+      game.push_back(std::move(verifierOptions));
     }
 
     auto queries = std::vector<query_t>{};
@@ -161,6 +175,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE int search_classic_wasm(char *input,
     }
     const auto optimizeExpectedValue =
         data.value("optimizeExpectedValue", false);
+    const auto expectedValueNodeBudget =
+        data.value<uint64_t>("expectedValueNodeBudget", 0);
+    const auto expectedValueTimeBudgetMs =
+        data.value<uint32_t>("expectedValueTimeBudgetMs", 0);
     auto simulationCriteriaIndices =
         std::optional<std::vector<uint8_t>>{};
     if (data.contains("simulationCriteriaIndices") &&
@@ -181,14 +199,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE int search_classic_wasm(char *input,
         initialRound.checkedVerifierMask |= uint8_t{1} << verifierIdx;
       }
     }
-    const auto result = search_classic(
+    const auto result = search_standard(
         game, queries, initialRound,
         [searchId](const search_progress_t &progress) {
           emit_search_progress(searchId, progress.rounds, progress.checks,
                                static_cast<double>(progress.nodes),
-                               static_cast<uint32_t>(progress.memoStates));
+                               static_cast<uint32_t>(progress.memoStates),
+                               progress.optimizingExpectedValue);
         },
-        answer, optimizeExpectedValue, simulationCriteriaIndices);
+        answer, optimizeExpectedValue, simulationCriteriaIndices,
+        expectedValueNodeBudget, expectedValueTimeBudgetMs, true);
 
     auto outputJson = json();
     outputJson["status"] = static_cast<uint8_t>(result.status);
@@ -209,10 +229,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE int search_classic_wasm(char *input,
     outputJson["answerResultKnown"] = result.answerResultKnown;
     outputJson["answerResult"] = result.answerResult;
     outputJson["expectedValueOptimized"] = result.expectedValueOptimized;
+    outputJson["expectedValueLimitReached"] =
+        result.expectedValueLimitReached;
     outputJson["expectedRounds"] = result.expectedRounds;
     outputJson["expectedChecks"] = result.expectedChecks;
     outputJson["nodes"] = result.nodes;
     outputJson["memoStates"] = result.memoStates;
+    outputJson["id"] = searchId;
+
+    // Search workers are intentionally short-lived. Send the answer before
+    // unwinding the WASM call so the UI can terminate the worker and reclaim
+    // a large minimax memo table in one operation.
+    const auto serializedResult = outputJson.dump();
+    emit_search_result(serializedResult.c_str());
     return outputJson;
   });
 }

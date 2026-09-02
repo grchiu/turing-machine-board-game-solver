@@ -77,7 +77,7 @@ TEST_CASE("classic search optimizes rounds before checks") {
     game.push_back(all_cards[card]);
   }
 
-  const auto result = search_classic(game, {});
+  const auto result = search_standard(game, {});
   CHECK(result.status == search_status_t::recommendation);
   CHECK(result.liveWorlds > 1);
   CHECK(result.liveCodes > 1);
@@ -111,7 +111,7 @@ TEST_CASE("classic search recognizes a completed puzzle") {
       query_t{{5, 3, 1}, 'F', false},
   };
 
-  const auto result = search_classic(game, queries);
+  const auto result = search_standard(game, queries);
   CHECK(result.status == search_status_t::solved);
   CHECK(result.liveCodes == 1);
   CHECK(result.worstCaseRounds == 0);
@@ -125,7 +125,7 @@ TEST_CASE("classic search can continue an in-progress round") {
     game.push_back(all_cards[card]);
   }
 
-  const auto first = search_classic(game, {});
+  const auto first = search_standard(game, {});
   REQUIRE(first.status == search_status_t::recommendation);
   REQUIRE(first.startsNewRound == true);
   const auto codeIdx = static_cast<uint8_t>(
@@ -135,7 +135,7 @@ TEST_CASE("classic search can continue an in-progress round") {
   for (const auto answer : {false, true}) {
     const auto query = query_t{
         first.code, static_cast<char>('A' + first.verifierIdx), answer};
-    const auto next = search_classic(
+    const auto next = search_standard(
         game, {query},
         round_context_t{
             true, codeIdx,
@@ -146,7 +146,7 @@ TEST_CASE("classic search can continue an in-progress round") {
     CHECK(next.code == first.code);
   }
 
-  const auto cappedRound = search_classic(
+  const auto cappedRound = search_standard(
       game, {}, round_context_t{true, codeIdx, 0b00000111});
   CHECK(cappedRound.status == search_status_t::recommendation);
   CHECK(cappedRound.startsNewRound == true);
@@ -164,7 +164,7 @@ TEST_CASE("classic search can simulate a known answer") {
   auto solved = false;
 
   for (size_t step = 0; step < 12; step += 1) {
-    const auto result = search_classic(game, queries, round, {}, answer, true);
+    const auto result = search_standard(game, queries, round, {}, answer, true);
     REQUIRE(result.answerMatchesLiveWorld == true);
     if (step == 0) {
       CHECK(result.worstCaseRounds == 2);
@@ -214,7 +214,7 @@ TEST_CASE("classic simulation uses the verification cards to resolve a world") {
   auto solved = false;
 
   for (size_t step = 0; step < 12; step += 1) {
-    const auto result = search_classic(game, queries, round, {}, answer, false,
+    const auto result = search_standard(game, queries, round, {}, answer, false,
                                        criteriaIndices);
     REQUIRE(result.answerMatchesLiveWorld == true);
     REQUIRE(result.solutionKnown == true);
@@ -251,7 +251,7 @@ TEST_CASE("classic search derives the hidden solution from verification cards") 
     game.push_back(all_cards[card]);
   }
 
-  const auto result = search_classic(
+  const auto result = search_standard(
       game, {}, {}, {}, std::nullopt, false,
       std::vector<uint8_t>{1, 1, 1, 5, 2, 2});
 
@@ -260,4 +260,93 @@ TEST_CASE("classic search derives the hidden solution from verification cards") 
   CHECK(result.solution == code_t{4, 3, 3});
   CHECK(result.answerMatchesLiveWorld == true);
   CHECK(result.answerResultKnown == true);
+}
+
+TEST_CASE("standard search supports extreme verifier pairs") {
+  const auto cardPairs = std::vector<std::pair<size_t, size_t>>{
+      {25, 23}, {24, 16}, {36, 4}, {42, 14}};
+  auto game = std::vector<card_t>{};
+  for (const auto &[firstCardId, secondCardId] : cardPairs) {
+    auto verifierOptions = all_cards[firstCardId];
+    const auto &secondCard = all_cards[secondCardId];
+    verifierOptions.insert(verifierOptions.end(), secondCard.begin(),
+                           secondCard.end());
+    game.push_back(std::move(verifierOptions));
+  }
+
+  // #F4D EXI: the real criteria are spread across both cards in each pair.
+  const auto criteriaIndices = std::vector<uint8_t>{1, 3, 0, 8};
+  const auto result = search_standard(game, {}, {}, {}, std::nullopt, false,
+                                      criteriaIndices);
+
+  REQUIRE(result.status == search_status_t::recommendation);
+  REQUIRE(result.liveWorlds > 0);
+  REQUIRE(result.solutionKnown == true);
+  CHECK(result.solution == code_t{3, 4, 2});
+  CHECK(result.answerMatchesLiveWorld == true);
+  CHECK(result.answerResultKnown == true);
+}
+
+TEST_CASE("standard search supports six-verifier extreme puzzles") {
+  const auto cardPairs = std::vector<std::pair<size_t, size_t>>{
+      {10, 2}, {14, 36}, {11, 43}, {46, 21}, {27, 25}, {3, 20}};
+  auto game = std::vector<card_t>{};
+  for (const auto &[firstCardId, secondCardId] : cardPairs) {
+    auto verifierOptions = all_cards[firstCardId];
+    const auto &secondCard = all_cards[secondCardId];
+    verifierOptions.insert(verifierOptions.end(), secondCard.begin(),
+                           secondCard.end());
+    game.push_back(std::move(verifierOptions));
+  }
+
+  const auto result = search_standard(game, {});
+
+  CHECK(result.status == search_status_t::recommendation);
+  CHECK(result.liveWorlds > 0);
+  CHECK(result.liveCodes > 1);
+  CHECK(result.verifierIdx < game.size());
+}
+
+TEST_CASE("expected-value limit preserves the optimal extreme plan") {
+  const auto cardPairs = std::vector<std::pair<size_t, size_t>>{
+      {27, 5}, {14, 17}, {20, 45}, {25, 11}, {48, 19}, {7, 22}};
+  auto game = std::vector<card_t>{};
+  for (const auto &[firstCardId, secondCardId] : cardPairs) {
+    auto verifierOptions = all_cards[firstCardId];
+    const auto &secondCard = all_cards[secondCardId];
+    verifierOptions.insert(verifierOptions.end(), secondCard.begin(),
+                           secondCard.end());
+    game.push_back(std::move(verifierOptions));
+  }
+
+  const auto result = search_standard(game, {}, {}, {}, std::nullopt, true,
+                                      std::nullopt, 1);
+
+  CHECK(result.status == search_status_t::recommendation);
+  CHECK(result.worstCaseRounds == 3);
+  CHECK(result.worstCaseChecks == 6);
+  CHECK(result.expectedValueOptimized == false);
+  CHECK(result.expectedValueLimitReached == true);
+}
+
+TEST_CASE("expected-value limit returns the harder five-verifier plan") {
+  const auto cardPairs = std::vector<std::pair<size_t, size_t>>{
+      {39, 4}, {5, 16}, {9, 17}, {48, 25}, {19, 23}};
+  auto game = std::vector<card_t>{};
+  for (const auto &[firstCardId, secondCardId] : cardPairs) {
+    auto verifierOptions = all_cards[firstCardId];
+    const auto &secondCard = all_cards[secondCardId];
+    verifierOptions.insert(verifierOptions.end(), secondCard.begin(),
+                           secondCard.end());
+    game.push_back(std::move(verifierOptions));
+  }
+
+  const auto result = search_standard(game, {}, {}, {}, std::nullopt, true,
+                                      std::nullopt, 1);
+
+  CHECK(result.status == search_status_t::recommendation);
+  CHECK(result.worstCaseRounds == 3);
+  CHECK(result.worstCaseChecks == 7);
+  CHECK(result.expectedValueOptimized == false);
+  CHECK(result.expectedValueLimitReached == true);
 }

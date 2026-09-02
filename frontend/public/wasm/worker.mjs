@@ -109,6 +109,10 @@ function handleData(data) {
     return getPossibleCombinations(data);
   }
   const api = getWasmApi();
+  if (data.type === "search_standard_wasm") {
+    callOneShotSearch(api[data.type], api.memory, data);
+    return null;
+  }
   return callWasmFunction(api[data.type], api.memory, data);
 }
 
@@ -121,7 +125,7 @@ function getWasmApi() {
     solve_wasm: Module._solve_wasm,
     get_possible_codes: Module._get_possible_codes,
     evaluate_verifier_wasm: Module._evaluate_verifier_wasm,
-    search_classic_wasm: Module._search_classic_wasm,
+    search_standard_wasm: Module._search_standard_wasm,
   };
 }
 
@@ -142,11 +146,26 @@ this.onmessage = async function onmessage(e) {
   await waitForWasmModule();
   const { data } = e;
   const result = handleData(data);
+  if (result === null) {
+    return;
+  }
   result.id = data.id;
   result.type = "result";
   console.log(result);
   this.postMessage(result);
 };
+
+function callOneShotSearch(asmFunction, memory, inputData) {
+  const data = JSON.stringify(inputData);
+  const encoder = new TextEncoder();
+  const input = new Uint8Array(memory.buffer, 0);
+  const { written } = encoder.encodeInto(data, input);
+  input[written] = 0;
+
+  // The result is posted directly by WASM before this call unwinds. The
+  // output address remains for compatibility with the exported signature.
+  asmFunction(input.byteOffset, written + 1);
+}
 
 function callWasmFunction(asmFunction, memory, inputData) {
   const data = JSON.stringify(inputData);

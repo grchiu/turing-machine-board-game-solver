@@ -15,6 +15,7 @@ export type SearchProgress = {
   checks: number;
   nodes: number;
   memoStates: number;
+  optimizingExpectedValue: boolean;
 };
 
 export type SearchResult = {
@@ -36,6 +37,7 @@ export type SearchResult = {
   answerResultKnown: boolean;
   answerResult: boolean;
   expectedValueOptimized: boolean;
+  expectedValueLimitReached: boolean;
   expectedRounds: number;
   expectedChecks: number;
   nodes: number;
@@ -48,9 +50,8 @@ export type SolverResult = {
   possibleLetters: string[][];
 };
 
-const myWorker = new Worker(
-  "/turing-machine-board-game-solver/wasm/worker.mjs"
-);
+const workerUrl = "/turing-machine-board-game-solver/wasm/worker.mjs";
+const sharedWorker = new Worker(workerUrl);
 
 function checkDigits(state: RootState, possibleCodes: string[]) {
   const digits = { triangle: new Set(), square: new Set(), circle: new Set() };
@@ -230,12 +231,16 @@ export async function checkDeductions(state: RootState) {
   }
 }
 
-function getClassicSearchInput(
+function getStandardSearchInput(
   state: RootState,
   answer?: number[],
-  optimizeExpectedValue = false
+  optimizeExpectedValue = false,
+  expectedValueNodeBudget = 0,
+  expectedValueTimeBudgetMs = 0
 ) {
-  const cards = state.comments.map(({ criteriaCards }) => criteriaCards[0].id);
+  const cards = state.comments.map(({ criteriaCards }) =>
+    criteriaCards.map(({ id }) => id)
+  );
   const lastRound = state.rounds[state.rounds.length - 1];
   const code = lastRound?.code.map(({ digit }) => digit);
   const checkedVerifierIndices = lastRound?.queries
@@ -253,10 +258,20 @@ function getClassicSearchInput(
       ? { code: code as number[], checkedVerifierIndices }
       : null;
   const criteriaIndices = state.comments.map(({ criteriaCards }) => {
-    const criteriaCard = criteriaCards[0];
-    return criteriaCard.cryptCard
-      ? getCriteriaIndexForCryptCard(criteriaCard.id, criteriaCard.cryptCard.id)
-      : null;
+    let criteriaOffset = 0;
+    for (const criteriaCard of criteriaCards) {
+      const criteriaIndex = criteriaCard.cryptCard
+        ? getCriteriaIndexForCryptCard(
+            criteriaCard.id,
+            criteriaCard.cryptCard.id
+          )
+        : null;
+      if (criteriaIndex !== null) {
+        return criteriaOffset + criteriaIndex;
+      }
+      criteriaOffset += criteriaCard.criteriaSlots;
+    }
+    return null;
   });
   const simulationCriteriaIndices = criteriaIndices.every(
     (index): index is number => index !== null
@@ -270,19 +285,29 @@ function getClassicSearchInput(
     answer: answer ?? null,
     simulationCriteriaIndices,
     optimizeExpectedValue,
+    expectedValueNodeBudget,
+    expectedValueTimeBudgetMs,
   };
 }
 
-export async function searchClassic(
+export async function searchStandard(
   state: RootState,
   onProgress: (progress: SearchProgress) => void,
   answer?: number[],
-  optimizeExpectedValue = false
+  optimizeExpectedValue = false,
+  expectedValueNodeBudget = 0,
+  expectedValueTimeBudgetMs = 0
 ): Promise<SearchResult> {
   return waitForWorker(
     {
-      type: "search_classic_wasm",
-      ...getClassicSearchInput(state, answer, optimizeExpectedValue),
+      type: "search_standard_wasm",
+      ...getStandardSearchInput(
+        state,
+        answer,
+        optimizeExpectedValue,
+        expectedValueNodeBudget,
+        expectedValueTimeBudgetMs
+      ),
     },
     onProgress
   );
@@ -330,11 +355,26 @@ async function waitForWorker(
     if (onProgress) {
       progressCallbacks[currentWorkId] = onProgress;
     }
-    myWorker.postMessage({ ...data, id: currentWorkId });
+    if (data.type === "search_standard_wasm") {
+      const searchWorker = new Worker(workerUrl);
+      searchWorker.onmessage = (event) => {
+        handleWorkerMessage(event);
+        if (event.data.type === "result") {
+          searchWorker.terminate();
+        }
+      };
+      searchWorker.onerror = (event) => {
+        rejectWorkerRequests(event, [currentWorkId]);
+        searchWorker.terminate();
+      };
+      searchWorker.postMessage({ ...data, id: currentWorkId });
+      return;
+    }
+    sharedWorker.postMessage({ ...data, id: currentWorkId });
   });
 }
 
-myWorker.onmessage = function onmessage(e) {
+function handleWorkerMessage(e: MessageEvent) {
   const data = e.data;
   if (data.type === "search_progress") {
     progressCallbacks[data.id]?.(data);
@@ -345,16 +385,20 @@ myWorker.onmessage = function onmessage(e) {
   delete promiseResolves[data.id];
   delete promiseRejects[data.id];
   delete progressCallbacks[data.id];
-};
+}
 
-myWorker.onerror = function onerror(event) {
+function rejectWorkerRequests(event: ErrorEvent, ids: number[]) {
   const error = new Error(event.message || "The solver worker failed.");
-  for (const reject of Object.values(promiseRejects)) {
-    reject(error);
+  for (const id of ids) {
+    promiseRejects[id]?.(error);
+    delete promiseResolves[id];
+    delete promiseRejects[id];
+    delete progressCallbacks[id];
   }
-  for (const id of Object.keys(promiseRejects)) {
-    delete promiseResolves[Number(id)];
-    delete promiseRejects[Number(id)];
-    delete progressCallbacks[Number(id)];
-  }
+}
+
+sharedWorker.onmessage = handleWorkerMessage;
+
+sharedWorker.onerror = function onerror(event) {
+  rejectWorkerRequests(event, Object.keys(promiseRejects).map(Number));
 };
