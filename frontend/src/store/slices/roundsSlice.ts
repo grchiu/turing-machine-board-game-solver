@@ -16,8 +16,8 @@ export type RoundsState = {
   isPristine: boolean;
 }[];
 
-const initialState: RoundsState = [
-  {
+function createRound(isPristine: boolean): RoundsState[number] {
+  return {
     code: (["triangle", "square", "circle"] as Shape[]).map((shape) => ({
       shape,
       digit: null,
@@ -26,9 +26,11 @@ const initialState: RoundsState = [
       verifier,
       state: "unknown",
     })),
-    isPristine: false,
-  },
-];
+    isPristine,
+  };
+}
+
+const initialState: RoundsState = [createRound(false)];
 
 export const roundsSlice = createSlice({
   name: "rounds",
@@ -40,19 +42,7 @@ export const roundsSlice = createSlice({
       state.splice(action.payload, 1);
     },
     addRound: (state) => {
-      state.push({
-        code: (["triangle", "square", "circle"] as Shape[]).map((shape) => ({
-          shape,
-          digit: null,
-        })),
-        queries: (["A", "B", "C", "D", "E", "F"] as Verifier[]).map(
-          (verifier) => ({
-            verifier,
-            state: "unknown",
-          })
-        ),
-        isPristine: true,
-      });
+      state.push(createRound(true));
     },
     updateCodeDigit: (
       state,
@@ -95,6 +85,34 @@ export const roundsSlice = createSlice({
       round.isPristine = false;
 
       state[index] = round;
+    },
+    recordSimulatedCheck: (
+      state,
+      action: PayloadAction<{
+        code: Digit[];
+        verifier: Verifier;
+        startsNewRound: boolean;
+        result: boolean;
+      }>
+    ) => {
+      const { code, verifier, startsNewRound, result } = action.payload;
+      let round = state[state.length - 1];
+      const canUseLastRound =
+        round &&
+        round.code.every(({ digit }) => digit === null) &&
+        round.queries.every((query) => query.state === "unknown");
+
+      if (!round || (startsNewRound && !canUseLastRound)) {
+        state.push(createRound(false));
+        round = state[state.length - 1];
+      }
+
+      round.code.forEach((entry, index) => {
+        entry.digit = code[index];
+      });
+      const query = round.queries.find((entry) => entry.verifier === verifier)!;
+      query.state = result ? "solved" : "unsolved";
+      round.isPristine = false;
     },
   },
 });

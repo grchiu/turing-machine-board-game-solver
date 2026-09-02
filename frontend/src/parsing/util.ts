@@ -306,6 +306,20 @@ export function getCryptCards(cardIdx: number) {
   return CARDS[cardIdx].flat();
 }
 
+export function getCriteriaIndexForCryptCard(
+  criteriaCardId: number,
+  cryptCardId: number
+) {
+  const criteria = CARDS[criteriaCardId];
+  if (!criteria) {
+    return null;
+  }
+  const index = criteria.findIndex((cryptCards) =>
+    cryptCards.includes(cryptCardId)
+  );
+  return index >= 0 ? index : null;
+}
+
 export function getColor(checkCard: number) {
   for (let i of range(0, 4)) {
     if (CHECK_CARDS[i].includes(checkCard)) {

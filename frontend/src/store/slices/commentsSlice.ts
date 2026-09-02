@@ -132,6 +132,39 @@ export const commentsSlice = createSlice({
         // });
       }
     },
+    applyPossibleVerifiers: (
+      state,
+      action: PayloadAction<number[][]>
+    ) => {
+      for (let commentIdx = 0; commentIdx < state.length; commentIdx += 1) {
+        const possibleVerifiers = new Set(action.payload[commentIdx] || []);
+        let verifierOffset = 0;
+
+        for (const criteriaCard of state[commentIdx].criteriaCards) {
+          const irrelevantCriteria: number[] = [];
+          for (
+            let criteriaIdx = 0;
+            criteriaIdx < criteriaCard.criteriaSlots;
+            criteriaIdx += 1
+          ) {
+            if (!possibleVerifiers.has(verifierOffset + criteriaIdx)) {
+              irrelevantCriteria.push(criteriaIdx + 1);
+            }
+          }
+          verifierOffset += criteriaCard.criteriaSlots;
+
+          if (
+            criteriaCard.irrelevantCriteria.length !==
+              irrelevantCriteria.length ||
+            criteriaCard.irrelevantCriteria.some(
+              (criteria, index) => criteria !== irrelevantCriteria[index]
+            )
+          ) {
+            criteriaCard.irrelevantCriteria = irrelevantCriteria;
+          }
+        }
+      }
+    },
   },
 });
 

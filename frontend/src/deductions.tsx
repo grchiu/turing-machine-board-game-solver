@@ -1,11 +1,50 @@
 import { RootState, store } from "store";
 import { alertActions } from "store/slices/alertSlice";
 import { CommentsState } from "store/slices/commentsSlice";
+import { getCriteriaIndexForCryptCard } from "parsing/util";
 
 export type Query = {
   code: number[];
   verifierIdx: number;
   result: boolean;
+};
+
+export type SearchProgress = {
+  rounds: number;
+  checks: number;
+  nodes: number;
+  memoStates: number;
+};
+
+export type SearchResult = {
+  status: 0 | 1 | 2;
+  code: number[];
+  solutionKnown: boolean;
+  solution: number[];
+  verifierIdx: number;
+  startsNewRound: boolean;
+  worstCaseRounds: number;
+  worstCaseChecks: number;
+  liveWorlds: number;
+  liveCodes: number;
+  greenWorlds: number;
+  redWorlds: number;
+  greenCodes: number;
+  redCodes: number;
+  answerMatchesLiveWorld: boolean;
+  answerResultKnown: boolean;
+  answerResult: boolean;
+  expectedValueOptimized: boolean;
+  expectedRounds: number;
+  expectedChecks: number;
+  nodes: number;
+  memoStates: number;
+};
+
+export type SolverResult = {
+  codes: string[];
+  possibleVerifiers: number[][];
+  possibleLetters: string[][];
 };
 
 const myWorker = new Worker(
@@ -67,28 +106,7 @@ function checkLetters(state: RootState, possibleLetters: string[][]) {
   return true;
 }
 
-export async function checkDeductions(state: RootState) {
-  const numVerifiers = state.comments.length;
-  const mode = (() => {
-    if (state.comments[0].nightmare) {
-      return 2;
-    }
-    if (state.comments[0].criteriaCards.length > 1) {
-      return 1;
-    }
-    return 0;
-  })();
-  const cards = [
-    ...state.comments.map(({ criteriaCards }) => {
-      return criteriaCards[0].id;
-    }),
-    ...(mode === 1
-      ? state.comments.map(({ criteriaCards }) => {
-          return criteriaCards[1].id;
-        })
-      : []),
-  ];
-
+function getQueries(state: RootState) {
   const queries: Query[] = [];
   for (const round of state.rounds) {
     const code: number[] = [];
@@ -112,14 +130,46 @@ export async function checkDeductions(state: RootState) {
       });
     }
   }
+  return queries;
+}
 
-  const result = await waitForWorker({
+function getSolverInput(state: RootState) {
+  const numVerifiers = state.comments.length;
+  const mode = (() => {
+    if (state.comments[0].nightmare) {
+      return 2;
+    }
+    if (state.comments[0].criteriaCards.length > 1) {
+      return 1;
+    }
+    return 0;
+  })();
+  const cards = [
+    ...state.comments.map(({ criteriaCards }) => {
+      return criteriaCards[0].id;
+    }),
+    ...(mode === 1
+      ? state.comments.map(({ criteriaCards }) => {
+          return criteriaCards[1].id;
+        })
+      : []),
+  ];
+
+  return {
     type: "solve_wasm",
     verifierCards: cards,
-    queries,
+    queries: getQueries(state),
     mode,
     numVerifiers,
-  });
+  };
+}
+
+export async function solveCurrentState(state: RootState): Promise<SolverResult> {
+  return waitForWorker(getSolverInput(state));
+}
+
+export async function checkDeductions(state: RootState) {
+  const result = await solveCurrentState(state);
 
   console.log(result);
   console.log(state);
@@ -155,6 +205,64 @@ export async function checkDeductions(state: RootState) {
   }
 }
 
+function getClassicSearchInput(
+  state: RootState,
+  answer?: number[],
+  optimizeExpectedValue = false
+) {
+  const cards = state.comments.map(({ criteriaCards }) => criteriaCards[0].id);
+  const lastRound = state.rounds[state.rounds.length - 1];
+  const code = lastRound?.code.map(({ digit }) => digit);
+  const checkedVerifierIndices = lastRound?.queries
+    .filter(
+      (query) =>
+        query.state !== "unknown" &&
+        query.verifier.charCodeAt(0) - 65 < state.comments.length
+    )
+    .map((query) => query.verifier.charCodeAt(0) - 65);
+  const currentRound =
+    code?.every((digit) => digit !== null && digit >= 1 && digit <= 5) &&
+    checkedVerifierIndices &&
+    checkedVerifierIndices.length > 0 &&
+    checkedVerifierIndices.length < 3
+      ? { code: code as number[], checkedVerifierIndices }
+      : null;
+  const criteriaIndices = state.comments.map(({ criteriaCards }) => {
+    const criteriaCard = criteriaCards[0];
+    return criteriaCard.cryptCard
+      ? getCriteriaIndexForCryptCard(criteriaCard.id, criteriaCard.cryptCard.id)
+      : null;
+  });
+  const simulationCriteriaIndices = criteriaIndices.every(
+    (index): index is number => index !== null
+  )
+    ? criteriaIndices
+    : null;
+  return {
+    cards,
+    queries: getQueries(state),
+    currentRound,
+    answer: answer ?? null,
+    simulationCriteriaIndices,
+    optimizeExpectedValue,
+  };
+}
+
+export async function searchClassic(
+  state: RootState,
+  onProgress: (progress: SearchProgress) => void,
+  answer?: number[],
+  optimizeExpectedValue = false
+): Promise<SearchResult> {
+  return waitForWorker(
+    {
+      type: "search_classic_wasm",
+      ...getClassicSearchInput(state, answer, optimizeExpectedValue),
+    },
+    onProgress
+  );
+}
+
 export async function getPossibleCodes(comments: CommentsState) {
   const cards = comments.map(({ criteriaCards }) => {
     return criteriaCards.map((card) => card.id);
@@ -184,17 +292,44 @@ export async function getPossibleCodes(comments: CommentsState) {
 
 let workId = 0;
 const promiseResolves: { [id: number]: any } = {};
-async function waitForWorker(data: { [key: string]: any }): Promise<any> {
+const promiseRejects: { [id: number]: (error: Error) => void } = {};
+const progressCallbacks: { [id: number]: (data: SearchProgress) => void } = {};
+async function waitForWorker(
+  data: { [key: string]: any },
+  onProgress?: (progress: SearchProgress) => void
+): Promise<any> {
   const currentWorkId = workId++;
-  return new Promise((res) => {
+  return new Promise((res, reject) => {
     promiseResolves[currentWorkId] = res;
+    promiseRejects[currentWorkId] = reject;
+    if (onProgress) {
+      progressCallbacks[currentWorkId] = onProgress;
+    }
     myWorker.postMessage({ ...data, id: currentWorkId });
   });
 }
 
 myWorker.onmessage = function onmessage(e) {
   const data = e.data;
+  if (data.type === "search_progress") {
+    progressCallbacks[data.id]?.(data);
+    return;
+  }
   const resolve = promiseResolves[data.id];
-  resolve(data);
+  resolve?.(data);
   delete promiseResolves[data.id];
+  delete promiseRejects[data.id];
+  delete progressCallbacks[data.id];
+};
+
+myWorker.onerror = function onerror(event) {
+  const error = new Error(event.message || "The solver worker failed.");
+  for (const reject of Object.values(promiseRejects)) {
+    reject(error);
+  }
+  for (const id of Object.keys(promiseRejects)) {
+    delete promiseResolves[Number(id)];
+    delete promiseRejects[Number(id)];
+    delete progressCallbacks[Number(id)];
+  }
 };

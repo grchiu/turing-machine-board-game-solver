@@ -35,6 +35,10 @@ import { settingsActions } from "store/slices/settingsSlice";
 import { alertActions } from "store/slices/alertSlice";
 import { useCanBeSaved } from "hooks/useCanBeSaved";
 import { PossibleCodes } from "components/PossibleCodes";
+import { ActiveSearch } from "components/ActiveSearch";
+import { LiveDeductions } from "components/LiveDeductions";
+
+const LIVE_VERIFIER_DEDUCTIONS_ENABLED = true;
 
 const Root: FC = () => {
   const { theme, togglePaletteMode } = usePaletteMode();
@@ -56,6 +60,7 @@ const Root: FC = () => {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
+      <LiveDeductions enabled={LIVE_VERIFIER_DEDUCTIONS_ENABLED} />
       <Box
         textAlign="center"
         position="relative"
@@ -227,6 +232,7 @@ const Root: FC = () => {
           <Grid container justifyContent="center" spacing={2}>
             <Grid item lg={3} md={6} xs={12}>
               <Rounds />
+              <ActiveSearch />
             </Grid>
             <Grid item lg={6} md={6} xs={12}>
               {isUpLg ? <Comments /> : <DigitCode />}

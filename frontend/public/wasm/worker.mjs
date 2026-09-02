@@ -39,7 +39,7 @@ function getPossibleCombinations({
   mode,
   numVerifiers,
 }) {
-  const { memory, solve_wasm } = Module.asm;
+  const { memory, solve_wasm } = getWasmApi();
   const numCards = verifierCards.length;
   const numQueries = queries.length;
   const inputValues = [mode, numVerifiers, ...verifierCards, numQueries];
@@ -108,7 +108,20 @@ function handleData(data) {
   if (data.type === "solve_wasm") {
     return getPossibleCombinations(data);
   }
-  return callWasmFunction(Module.asm[data.type], Module.asm.memory, data);
+  const api = getWasmApi();
+  return callWasmFunction(api[data.type], api.memory, data);
+}
+
+function getWasmApi() {
+  if (Module.asm) {
+    return Module.asm;
+  }
+  return {
+    memory: { buffer: Module.HEAPU8.buffer },
+    solve_wasm: Module._solve_wasm,
+    get_possible_codes: Module._get_possible_codes,
+    search_classic_wasm: Module._search_classic_wasm,
+  };
 }
 
 async function delay(ms) {
@@ -116,7 +129,10 @@ async function delay(ms) {
 }
 
 async function waitForWasmModule() {
-  while (!Module?.asm) {
+  while (
+    !Module?.asm &&
+    !(Module?._solve_wasm && Module?.HEAPU8)
+  ) {
     await delay(100);
   }
 }
@@ -126,6 +142,7 @@ this.onmessage = async function onmessage(e) {
   const { data } = e;
   const result = handleData(data);
   result.id = data.id;
+  result.type = "result";
   console.log(result);
   this.postMessage(result);
 };

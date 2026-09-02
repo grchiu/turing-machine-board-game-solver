@@ -1,11 +1,25 @@
 #include "cards.hpp"
 #include "code.hpp"
 #include "json.hpp"
+#include "search.hpp"
 #include "solver.hpp"
 #include <cstdint>
 #include <emscripten/emscripten.h>
 
 using json = nlohmann::json;
+
+EM_JS(void, emit_search_progress,
+      (uint32_t searchId, uint8_t rounds, uint16_t checks, double nodes,
+       uint32_t memoStates), {
+        self.postMessage({
+          type: "search_progress",
+          id: searchId,
+          rounds: rounds,
+          checks: checks,
+          nodes: nodes,
+          memoStates: memoStates,
+        });
+      });
 
 int wasm_json(char *input, char *output, const std::function<json(json)> &foo) {
   json data = json::parse(input);
@@ -98,6 +112,87 @@ extern "C" EMSCRIPTEN_KEEPALIVE int get_possible_codes(char *input,
     auto outputJson = json();
     outputJson["codes"] = codes;
 
+    return outputJson;
+  });
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int search_classic_wasm(char *input,
+                                                         char *output) {
+  return wasm_json(input, output, [](const json &data) {
+    const auto cardIds = data["cards"].get<std::vector<uint8_t>>();
+    auto game = std::vector<card_t>{};
+    for (const auto cardId : cardIds) {
+      game.push_back(all_cards[cardId]);
+    }
+
+    auto queries = std::vector<query_t>{};
+    for (const auto &query : data["queries"]) {
+      queries.push_back(query_t{
+          query["code"].get<code_t>(),
+          static_cast<char>(query["verifierIdx"].get<uint8_t>()),
+          query["result"].get<bool>(),
+      });
+    }
+
+    const auto searchId = data["id"].get<uint32_t>();
+    auto answer = std::optional<code_t>{};
+    if (data.contains("answer") && !data["answer"].is_null()) {
+      answer = data["answer"].get<code_t>();
+    }
+    const auto optimizeExpectedValue =
+        data.value("optimizeExpectedValue", false);
+    auto simulationCriteriaIndices =
+        std::optional<std::vector<uint8_t>>{};
+    if (data.contains("simulationCriteriaIndices") &&
+        !data["simulationCriteriaIndices"].is_null()) {
+      simulationCriteriaIndices =
+          data["simulationCriteriaIndices"].get<std::vector<uint8_t>>();
+    }
+    auto initialRound = round_context_t{};
+    if (!data["currentRound"].is_null()) {
+      const auto code = data["currentRound"]["code"].get<code_t>();
+      initialRound.active = true;
+      initialRound.codeIdx = static_cast<uint8_t>(
+          (code[0] - MIN_NUMBER) * 25 + (code[1] - MIN_NUMBER) * 5 +
+          (code[2] - MIN_NUMBER));
+      for (const auto verifierIdx :
+           data["currentRound"]["checkedVerifierIndices"]
+               .get<std::vector<uint8_t>>()) {
+        initialRound.checkedVerifierMask |= uint8_t{1} << verifierIdx;
+      }
+    }
+    const auto result = search_classic(
+        game, queries, initialRound,
+        [searchId](const search_progress_t &progress) {
+          emit_search_progress(searchId, progress.rounds, progress.checks,
+                               static_cast<double>(progress.nodes),
+                               static_cast<uint32_t>(progress.memoStates));
+        },
+        answer, optimizeExpectedValue, simulationCriteriaIndices);
+
+    auto outputJson = json();
+    outputJson["status"] = static_cast<uint8_t>(result.status);
+    outputJson["code"] = result.code;
+    outputJson["solutionKnown"] = result.solutionKnown;
+    outputJson["solution"] = result.solution;
+    outputJson["verifierIdx"] = result.verifierIdx;
+    outputJson["startsNewRound"] = result.startsNewRound;
+    outputJson["worstCaseRounds"] = result.worstCaseRounds;
+    outputJson["worstCaseChecks"] = result.worstCaseChecks;
+    outputJson["liveWorlds"] = result.liveWorlds;
+    outputJson["liveCodes"] = result.liveCodes;
+    outputJson["greenWorlds"] = result.greenWorlds;
+    outputJson["redWorlds"] = result.redWorlds;
+    outputJson["greenCodes"] = result.greenCodes;
+    outputJson["redCodes"] = result.redCodes;
+    outputJson["answerMatchesLiveWorld"] = result.answerMatchesLiveWorld;
+    outputJson["answerResultKnown"] = result.answerResultKnown;
+    outputJson["answerResult"] = result.answerResult;
+    outputJson["expectedValueOptimized"] = result.expectedValueOptimized;
+    outputJson["expectedRounds"] = result.expectedRounds;
+    outputJson["expectedChecks"] = result.expectedChecks;
+    outputJson["nodes"] = result.nodes;
+    outputJson["memoStates"] = result.memoStates;
     return outputJson;
   });
 }
