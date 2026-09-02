@@ -51,7 +51,7 @@ const Root: FC = () => {
 
   const [savesDialog, setSavesDialog] = useState(false);
   const [hasBadge, setHasBadge] = useState(false);
-  const [autoDeductions, setAutoDeductions] = useState(true);
+  const [autoDeductions, setAutoDeductions] = useState(false);
   const [speculateMode, setSpeculateMode] = useState(false);
 
   useUpdateEffect(() => {
@@ -204,7 +204,7 @@ const Root: FC = () => {
               orientation="vertical"
               sx={{ height: "auto", margin: theme.spacing(0, 1) }}
             />
-            <NewButton />
+            <NewButton onNewGame={() => setAutoDeductions(false)} />
             <IconButton
               aria-label="save"
               color="primary"
@@ -311,7 +311,9 @@ const Root: FC = () => {
           <Grid container justifyContent="center" spacing={2}>
             <Grid item lg={3} md={6} xs={12}>
               <Rounds speculateMode={speculateMode} />
-              <ActiveSearch />
+              <ActiveSearch
+                onSimulationStart={() => setAutoDeductions(true)}
+              />
             </Grid>
             <Grid item lg={6} md={6} xs={12}>
               {isUpLg ? <Comments /> : <DigitCode />}

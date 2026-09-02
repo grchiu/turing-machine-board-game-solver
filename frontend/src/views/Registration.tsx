@@ -20,7 +20,7 @@ import TextField from "../components/TextField";
 const Registration: FC = () => {
   const dispatch = useAppDispatch();
   const registration = useAppSelector((state) => state.registration);
-  const [registrationMethod, setRegistrationMethod] = useState("paste");
+  const [registrationMethod, setRegistrationMethod] = useState("turing-hash");
 
   return (
     <Box

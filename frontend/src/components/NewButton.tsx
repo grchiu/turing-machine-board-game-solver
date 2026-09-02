@@ -15,7 +15,11 @@ import { registrationActions } from "store/slices/registrationSlice";
 import { useAppSelector } from "hooks/useAppSelector";
 import { useState } from "react";
 
-export function NewButton() {
+type NewButtonProps = {
+  onNewGame?: () => void;
+};
+
+export function NewButton({ onNewGame }: NewButtonProps) {
   const { theme } = usePaletteMode();
   const dispatch = useAppDispatch();
   const canBeSaved = useCanBeSaved();
@@ -32,6 +36,7 @@ export function NewButton() {
   };
 
   const handleConfirm = () => {
+    onNewGame?.();
     dispatch(registrationActions.reset());
     setDialogOpen(false);
   };

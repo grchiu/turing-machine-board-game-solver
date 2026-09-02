@@ -76,7 +76,11 @@ function getRecordedScore(state: RootState) {
   return { rounds, checks };
 }
 
-export function ActiveSearch() {
+type ActiveSearchProps = {
+  onSimulationStart?: () => void;
+};
+
+export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
   const dispatch = useAppDispatch();
   const state = useAppSelector((currentState) => currentState);
   const isStandardMode =
@@ -159,6 +163,7 @@ export function ActiveSearch() {
     const answerCode = result.solution;
     const answer = answerCode.join("");
     const firstResult = result;
+    onSimulationStart?.();
     isSearchingRef.current = true;
     setIsSearching(true);
     setIsSimulating(true);
