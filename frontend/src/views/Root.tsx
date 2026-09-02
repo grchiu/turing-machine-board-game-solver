@@ -88,7 +88,7 @@ const Root: FC = () => {
               transform: "rotate(-2deg)",
             }}
           >
-            Interactive Sheet
+            Interactive Solver
           </h3>
           <Box display="flex" justifyContent="center" position="relative">
             <IconButton
@@ -200,7 +200,7 @@ const Root: FC = () => {
             </IconButton>
             <IconButton
               aria-label="github"
-              href="https://github.com/alexander-zibert/turing-machine-board-game-solver"
+              href="https://github.com/grchiu/turing-machine-board-game-solver"
               target="_blank"
             >
               <GitHubIcon />

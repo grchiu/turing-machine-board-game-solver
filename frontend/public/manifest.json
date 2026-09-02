@@ -1,6 +1,6 @@
 {
-  "short_name": "Turing Machine Interactive Sheet",
-  "name": "Turing Machine Interactive Sheet",
+  "short_name": "Turing Machine Interactive Solver",
+  "name": "Turing Machine Interactive Solver",
   "icons": [
     {
       "src": "/turing-machine-board-game-solver/assets/android-chrome-192x192.png",
