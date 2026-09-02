@@ -37,8 +37,9 @@ import { useCanBeSaved } from "hooks/useCanBeSaved";
 import { PossibleCodes } from "components/PossibleCodes";
 import { ActiveSearch } from "components/ActiveSearch";
 import { LiveDeductions } from "components/LiveDeductions";
-
-const LIVE_VERIFIER_DEDUCTIONS_ENABLED = true;
+import AutoDeductionsIcon from "@mui/icons-material/LightbulbRounded";
+import SpeculateIcon from "@mui/icons-material/ScienceRounded";
+import Tooltip from "@mui/material/Tooltip";
 
 const Root: FC = () => {
   const { theme, togglePaletteMode } = usePaletteMode();
@@ -50,6 +51,8 @@ const Root: FC = () => {
 
   const [savesDialog, setSavesDialog] = useState(false);
   const [hasBadge, setHasBadge] = useState(false);
+  const [autoDeductions, setAutoDeductions] = useState(true);
+  const [speculateMode, setSpeculateMode] = useState(false);
 
   useUpdateEffect(() => {
     state.saves.length === 0 && setSavesDialog(false);
@@ -60,7 +63,7 @@ const Root: FC = () => {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <LiveDeductions enabled={LIVE_VERIFIER_DEDUCTIONS_ENABLED} />
+      <LiveDeductions enabled={autoDeductions} />
       <Box
         textAlign="center"
         position="relative"
@@ -121,6 +124,82 @@ const Root: FC = () => {
                 />
               </Box>
             </IconButton>
+            <Tooltip title="Auto Deductions">
+              <span>
+                <IconButton
+                  aria-label="Auto Deductions"
+                  aria-pressed={autoDeductions}
+                  disabled={state.registration.status !== "ready"}
+                  onClick={() => setAutoDeductions((enabled) => !enabled)}
+                  sx={{
+                    position: "relative",
+                    color: autoDeductions
+                      ? theme.palette.primary.dark
+                      : theme.palette.text.disabled,
+                  }}
+                >
+                  <ContentIcon />
+                  <Box
+                    sx={{
+                      background: theme.palette.background.default,
+                      width: theme.spacing(2),
+                      height: theme.spacing(2),
+                      bottom: 8,
+                      position: "absolute",
+                      right: 8,
+                    }}
+                  >
+                    <AutoDeductionsIcon
+                      fontSize="small"
+                      sx={{
+                        position: "absolute",
+                        right: -4,
+                        bottom: -3,
+                        fontSize: 18,
+                      }}
+                    />
+                  </Box>
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="Speculate Mode">
+              <span>
+                <IconButton
+                  aria-label="Speculate Mode"
+                  aria-pressed={speculateMode}
+                  disabled={state.registration.status !== "ready"}
+                  onClick={() => setSpeculateMode((enabled) => !enabled)}
+                  sx={{
+                    position: "relative",
+                    color: speculateMode
+                      ? theme.palette.secondary.dark
+                      : theme.palette.text.disabled,
+                  }}
+                >
+                  <ContentIcon />
+                  <Box
+                    sx={{
+                      background: theme.palette.background.default,
+                      width: theme.spacing(2),
+                      height: theme.spacing(2),
+                      bottom: 8,
+                      position: "absolute",
+                      right: 8,
+                    }}
+                  >
+                    <SpeculateIcon
+                      fontSize="small"
+                      sx={{
+                        position: "absolute",
+                        right: -4,
+                        bottom: -3,
+                        fontSize: 18,
+                      }}
+                    />
+                  </Box>
+                </IconButton>
+              </span>
+            </Tooltip>
             <Divider
               orientation="vertical"
               sx={{ height: "auto", margin: theme.spacing(0, 1) }}
@@ -231,7 +310,7 @@ const Root: FC = () => {
         <Collapse in={state.registration.status === "ready"}>
           <Grid container justifyContent="center" spacing={2}>
             <Grid item lg={3} md={6} xs={12}>
-              <Rounds />
+              <Rounds speculateMode={speculateMode} />
               <ActiveSearch />
             </Grid>
             <Grid item lg={6} md={6} xs={12}>

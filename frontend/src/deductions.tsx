@@ -2,6 +2,7 @@ import { RootState, store } from "store";
 import { alertActions } from "store/slices/alertSlice";
 import { CommentsState } from "store/slices/commentsSlice";
 import { getCriteriaIndexForCryptCard } from "parsing/util";
+import type { CriteriaCard } from "hooks/useCriteriaCard";
 
 export type Query = {
   code: number[];
@@ -166,6 +167,30 @@ function getSolverInput(state: RootState) {
 
 export async function solveCurrentState(state: RootState): Promise<SolverResult> {
   return waitForWorker(getSolverInput(state));
+}
+
+export async function evaluateVerifier(
+  criteriaCards: CriteriaCard[],
+  cryptCardId: number,
+  code: number[]
+): Promise<boolean | null> {
+  for (const criteriaCard of criteriaCards) {
+    const criteriaIdx = getCriteriaIndexForCryptCard(
+      criteriaCard.id,
+      cryptCardId
+    );
+    if (criteriaIdx === null) {
+      continue;
+    }
+    const response = await waitForWorker({
+      type: "evaluate_verifier_wasm",
+      cardId: criteriaCard.id,
+      criteriaIdx,
+      code,
+    });
+    return response.known ? response.result : null;
+  }
+  return null;
 }
 
 export async function checkDeductions(state: RootState) {

@@ -36,7 +36,9 @@ The main additions are:
   recommend another verifier with the current code or start a new round with a
   different code.
 - Expected-value tie-breaking among plans with the same worst-case guarantee.
-- Live verifier-category deductions as results are entered.
+- Toggleable live verifier-category deductions as results are entered.
+- An optional Speculate Mode for manually cycling checks through green, red,
+  and off; normal mode calculates the real verifier result automatically.
 - Search progress showing explored nodes and memoized states.
 - A simulation mode that follows the recommended policy through a complete
   puzzle without displaying the hidden solution in advance.
@@ -100,9 +102,8 @@ currently assume that each live world is equally likely.
 
 Expected-value optimization can be disabled with
 `OPTIMIZE_EXPECTED_VALUE` in
-`frontend/src/components/ActiveSearch.tsx`. Live verifier-category updates are
-independently controlled by `LIVE_VERIFIER_DEDUCTIONS_ENABLED` in
-`frontend/src/views/Root.tsx`.
+`frontend/src/components/ActiveSearch.tsx`. Live verifier-category updates can
+be switched on or off with the **Auto Deductions** toolbar button.
 
 ### Search Strategy
 

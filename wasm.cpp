@@ -116,6 +116,26 @@ extern "C" EMSCRIPTEN_KEEPALIVE int get_possible_codes(char *input,
   });
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE int evaluate_verifier_wasm(char *input,
+                                                             char *output) {
+  return wasm_json(input, output, [](const json &data) {
+    const auto cardId = data["cardId"].get<uint8_t>();
+    const auto criteriaIdx = data["criteriaIdx"].get<uint8_t>();
+    const auto code = data["code"].get<code_t>();
+    const auto known =
+        cardId < all_cards.size() && criteriaIdx < all_cards[cardId].size() &&
+        std::all_of(code.begin(), code.end(), [](const auto digit) {
+          return digit >= MIN_NUMBER && digit <= MAX_NUMBER;
+        });
+
+    auto outputJson = json();
+    outputJson["known"] = known;
+    outputJson["result"] =
+        known ? all_cards[cardId][criteriaIdx].isValid(code) : false;
+    return outputJson;
+  });
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE int search_classic_wasm(char *input,
                                                          char *output) {
   return wasm_json(input, output, [](const json &data) {

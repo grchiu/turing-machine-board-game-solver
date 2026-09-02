@@ -1,5 +1,39 @@
 import roundsReducer, { roundsActions } from "./roundsSlice";
 
+describe("verifier result entry", () => {
+  it("cycles green, red, and off in speculate mode", () => {
+    let state = roundsReducer(
+      undefined,
+      roundsActions.updateQueryState({ index: 0, verifier: "A" })
+    );
+    expect(state[0].queries[0].state).toBe("solved");
+
+    state = roundsReducer(
+      state,
+      roundsActions.updateQueryState({ index: 0, verifier: "A" })
+    );
+    expect(state[0].queries[0].state).toBe("unsolved");
+
+    state = roundsReducer(
+      state,
+      roundsActions.updateQueryState({ index: 0, verifier: "A" })
+    );
+    expect(state[0].queries[0].state).toBe("unknown");
+  });
+
+  it("sets a calculated result directly", () => {
+    const state = roundsReducer(
+      undefined,
+      roundsActions.setQueryState({
+        index: 0,
+        verifier: "B",
+        queryState: "unsolved",
+      })
+    );
+    expect(state[0].queries[1].state).toBe("unsolved");
+  });
+});
+
 describe("simulated rounds", () => {
   it("records continued checks and starts new rounds", () => {
     let state = roundsReducer(

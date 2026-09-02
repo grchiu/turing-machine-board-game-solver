@@ -2,8 +2,10 @@ import { PayloadAction, createSlice } from "@reduxjs/toolkit";
 
 type Query = {
   verifier: Verifier;
-  state: "solved" | "unsolved" | "unknown";
+  state: QueryState;
 };
+
+export type QueryState = "solved" | "unsolved" | "unknown";
 
 type Code = {
   shape: Shape;
@@ -72,12 +74,12 @@ export const roundsSlice = createSlice({
 
       switch (query.state) {
         case "unknown":
-          query.state = "unsolved";
-          break;
-        case "unsolved":
           query.state = "solved";
           break;
         case "solved":
+          query.state = "unsolved";
+          break;
+        case "unsolved":
           query.state = "unknown";
           break;
       }
@@ -85,6 +87,20 @@ export const roundsSlice = createSlice({
       round.isPristine = false;
 
       state[index] = round;
+    },
+    setQueryState: (
+      state,
+      action: PayloadAction<{
+        index: number;
+        verifier: Verifier;
+        queryState: QueryState;
+      }>
+    ) => {
+      const { index, verifier, queryState } = action.payload;
+      const round = state[index];
+      const query = round.queries.find((entry) => entry.verifier === verifier)!;
+      query.state = queryState;
+      round.isPristine = false;
     },
     recordSimulatedCheck: (
       state,

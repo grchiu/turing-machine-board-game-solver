@@ -120,6 +120,7 @@ function getWasmApi() {
     memory: { buffer: Module.HEAPU8.buffer },
     solve_wasm: Module._solve_wasm,
     get_possible_codes: Module._get_possible_codes,
+    evaluate_verifier_wasm: Module._evaluate_verifier_wasm,
     search_classic_wasm: Module._search_classic_wasm,
   };
 }

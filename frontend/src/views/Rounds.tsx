@@ -8,7 +8,11 @@ import { useAppSelector } from "hooks/useAppSelector";
 import { FC } from "react";
 import { roundsActions } from "store/slices/roundsSlice";
 
-const Rounds: FC = () => {
+type Props = {
+  speculateMode: boolean;
+};
+
+const Rounds: FC<Props> = ({ speculateMode }) => {
   const dispatch = useAppDispatch();
   const rounds = useAppSelector((state) => state.rounds);
 
@@ -20,7 +24,12 @@ const Rounds: FC = () => {
     >
       <Box p={2} pb={0}>
         {rounds.map((round, index) => (
-          <Round key={index} round={round} index={index} />
+          <Round
+            key={index}
+            round={round}
+            index={index}
+            speculateMode={speculateMode}
+          />
         ))}
       </Box>
       <Box p={2} pt={0}>

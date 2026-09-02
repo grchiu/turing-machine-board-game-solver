@@ -8,20 +8,104 @@ import Divider from "@mui/material/Divider";
 import Grid from "@mui/material/Grid";
 import { alpha, useTheme } from "@mui/material/styles";
 import { useAppDispatch } from "hooks/useAppDispatch";
-import { FC } from "react";
+import { useAppSelector } from "hooks/useAppSelector";
+import { FC, useState } from "react";
 import { RoundsState, roundsActions } from "store/slices/roundsSlice";
 import ShapeIcon from "./ShapeIcon";
 import SingleCharLabel from "./SingleCharLabel";
 import TextField from "./TextField";
+import { evaluateVerifier } from "deductions";
+import { alertActions } from "store/slices/alertSlice";
 
 type Props = {
   round: RoundsState[number];
   index: number;
+  speculateMode: boolean;
 };
 
-const Round: FC<Props> = ({ round, index }) => {
+const Round: FC<Props> = ({ round, index, speculateMode }) => {
   const dispatch = useAppDispatch();
   const theme = useTheme();
+  const comments = useAppSelector((state) => state.comments);
+  const [pendingVerifier, setPendingVerifier] = useState<Verifier | null>(null);
+
+  const updateVerifier = async (
+    verifier: Verifier,
+    queryState: RoundsState[number]["queries"][number]["state"]
+  ) => {
+    if (speculateMode) {
+      dispatch(roundsActions.updateQueryState({ index, verifier }));
+      return;
+    }
+    if (queryState !== "unknown") {
+      dispatch(
+        roundsActions.setQueryState({
+          index,
+          verifier,
+          queryState: "unknown",
+        })
+      );
+      return;
+    }
+
+    const code = round.code.map(({ digit }) => digit);
+    if (!code.every((digit) => digit !== null && digit >= 1 && digit <= 5)) {
+      dispatch(
+        alertActions.openAlert({
+          message: "Enter a complete code before checking a verifier.",
+          level: "warning",
+        })
+      );
+      return;
+    }
+    const cryptCardId = comments
+      .find((comment) => comment.verifier === verifier)
+      ?.criteriaCards[0]?.cryptCard?.id;
+    if (cryptCardId === undefined) {
+      dispatch(
+        alertActions.openAlert({
+          message: "The verification card could not be identified.",
+          level: "warning",
+        })
+      );
+      return;
+    }
+
+    setPendingVerifier(verifier);
+    try {
+      const result = await evaluateVerifier(
+        comments.flatMap(({ criteriaCards }) => criteriaCards),
+        cryptCardId,
+        code as number[]
+      );
+      if (result === null) {
+        dispatch(
+          alertActions.openAlert({
+            message: "The verification card could not be identified.",
+            level: "warning",
+          })
+        );
+        return;
+      }
+      dispatch(
+        roundsActions.setQueryState({
+          index,
+          verifier,
+          queryState: result ? "solved" : "unsolved",
+        })
+      );
+    } catch (error) {
+      console.error("Verifier evaluation failed", error);
+      dispatch(
+        alertActions.openAlert({
+          message: "The verifier result could not be calculated.",
+          level: "error",
+        })
+      );
+    } finally {
+      setPendingVerifier(null);
+    }
+  };
 
   return (
     <Box>
@@ -66,7 +150,8 @@ const Round: FC<Props> = ({ round, index }) => {
                 id={`rounds__round-${
                   index + 1
                 }-verifier-${query.verifier.toLowerCase()}-button`}
-                arial-label={query.verifier}
+                aria-label={query.verifier}
+                disabled={pendingVerifier === query.verifier}
                 sx={{
                   minWidth: "100%",
                   p: 0,
@@ -81,14 +166,7 @@ const Round: FC<Props> = ({ round, index }) => {
                     query.verifier === "A" ? 2 : 0
                   ),
                 }}
-                onClick={() => {
-                  dispatch(
-                    roundsActions.updateQueryState({
-                      index,
-                      verifier: query.verifier,
-                    })
-                  );
-                }}
+                onClick={() => updateVerifier(query.verifier, query.state)}
               >
                 <Box width={1}>
                   <Box
