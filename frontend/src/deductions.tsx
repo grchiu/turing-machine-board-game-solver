@@ -417,10 +417,13 @@ async function waitForWorker(
     if (data.type === "search_standard_wasm") {
       const searchWorker = new Worker(workerUrl);
       searchWorker.onmessage = (event) => {
-        handleWorkerMessage(event);
-        if (event.data.type === "result") {
+        // WASM emits its result before the exported call unwinds. Terminating
+        // on the result races that unwind and eventually exhausts worker slots.
+        if (event.data.type === "search_worker_complete") {
           searchWorker.terminate();
+          return;
         }
+        handleWorkerMessage(event);
       };
       searchWorker.onerror = (event) => {
         rejectWorkerRequests(event, [currentWorkId]);

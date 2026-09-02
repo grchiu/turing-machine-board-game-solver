@@ -147,6 +147,9 @@ this.onmessage = async function onmessage(e) {
   const { data } = e;
   const result = handleData(data);
   if (result === null) {
+    if (data.type === "search_standard_wasm") {
+      this.postMessage({ type: "search_worker_complete", id: data.id });
+    }
     return;
   }
   result.id = data.id;

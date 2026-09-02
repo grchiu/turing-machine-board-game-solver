@@ -118,6 +118,10 @@ proved without a limit. The subsequent check-count tie-break is bounded by
 limit is reached, the solver returns a valid plan at the proven minimum round
 count and reports that only the check tie-break was capped.
 
+The initial nightmare recommendation still uses the bounded expected-value
+tie-break. Simulation skips repeating that optional stage after every observed
+result and follows a worst-case-optimal continuation instead.
+
 ### Search Strategy
 
 The implementation uses iterative deepening and memoized feasibility searches:

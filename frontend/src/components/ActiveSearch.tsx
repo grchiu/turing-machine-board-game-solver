@@ -166,6 +166,8 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
     const answerCode = result.solution;
     const answer = answerCode.join("");
     const firstResult = result;
+    const optimizeSimulationExpectedValue =
+      OPTIMIZE_EXPECTED_VALUE && !state.comments[0].nightmare;
     onSimulationStart?.();
     isSearchingRef.current = true;
     setIsSearching(true);
@@ -189,7 +191,7 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
                 store.getState(),
                 setProgress,
                 answerCode,
-                OPTIMIZE_EXPECTED_VALUE,
+                optimizeSimulationExpectedValue,
                 EXPECTED_VALUE_NODE_BUDGET,
                 EXPECTED_VALUE_TIME_BUDGET_MS,
                 store.getState().comments[0].nightmare
