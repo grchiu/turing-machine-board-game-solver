@@ -45,6 +45,7 @@ export function LiveDeductions({ enabled }: Props) {
           dispatch(
             commentsActions.applyPossibleVerifiers(result.possibleVerifiers)
           );
+          dispatch(commentsActions.applyPossibleLetters(result.possibleLetters));
         }
       })
       .catch((error) => {

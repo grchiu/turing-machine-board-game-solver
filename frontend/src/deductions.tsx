@@ -38,6 +38,7 @@ export type SearchResult = {
   answerResult: boolean;
   expectedValueOptimized: boolean;
   expectedValueLimitReached: boolean;
+  checkOptimizationLimitReached: boolean;
   expectedRounds: number;
   expectedChecks: number;
   nodes: number;
@@ -135,17 +136,19 @@ function getQueries(state: RootState) {
   return queries;
 }
 
+function getGameMode(state: RootState) {
+  if (state.comments[0].nightmare) {
+    return 2;
+  }
+  if (state.comments[0].criteriaCards.length > 1) {
+    return 1;
+  }
+  return 0;
+}
+
 function getSolverInput(state: RootState) {
   const numVerifiers = state.comments.length;
-  const mode = (() => {
-    if (state.comments[0].nightmare) {
-      return 2;
-    }
-    if (state.comments[0].criteriaCards.length > 1) {
-      return 1;
-    }
-    return 0;
-  })();
+  const mode = getGameMode(state);
   const cards = [
     ...state.comments.map(({ criteriaCards }) => {
       return criteriaCards[0].id;
@@ -236,8 +239,11 @@ function getStandardSearchInput(
   answer?: number[],
   optimizeExpectedValue = false,
   expectedValueNodeBudget = 0,
-  expectedValueTimeBudgetMs = 0
+  expectedValueTimeBudgetMs = 0,
+  checkOptimizationNodeBudget = 0,
+  checkOptimizationTimeBudgetMs = 0
 ) {
+  const mode = getGameMode(state);
   const cards = state.comments.map(({ criteriaCards }) =>
     criteriaCards.map(({ id }) => id)
   );
@@ -257,22 +263,67 @@ function getStandardSearchInput(
     checkedVerifierIndices.length < 3
       ? { code: code as number[], checkedVerifierIndices }
       : null;
-  const criteriaIndices = state.comments.map(({ criteriaCards }) => {
-    let criteriaOffset = 0;
-    for (const criteriaCard of criteriaCards) {
-      const criteriaIndex = criteriaCard.cryptCard
-        ? getCriteriaIndexForCryptCard(
-            criteriaCard.id,
-            criteriaCard.cryptCard.id
-          )
-        : null;
-      if (criteriaIndex !== null) {
-        return criteriaOffset + criteriaIndex;
+  let simulationCardIndicesByVerifier: number[] | null = null;
+  let criteriaIndices: Array<number | null>;
+  if (mode === 2) {
+    criteriaIndices = Array(state.comments.length).fill(null);
+    const cardIndicesByVerifier = Array(state.comments.length).fill(-1);
+    const usedCards = Array(state.comments.length).fill(false);
+
+    const assignVerifier = (verifierIdx: number): boolean => {
+      if (verifierIdx === state.comments.length) {
+        return true;
       }
-      criteriaOffset += criteriaCard.criteriaSlots;
+      const cryptCardId =
+        state.comments[verifierIdx].criteriaCards[0]?.cryptCard?.id;
+      if (cryptCardId === undefined) {
+        return false;
+      }
+      for (let cardIdx = 0; cardIdx < state.comments.length; cardIdx += 1) {
+        if (usedCards[cardIdx]) {
+          continue;
+        }
+        const criteriaCard = state.comments[cardIdx].criteriaCards[0];
+        const criteriaIdx = criteriaCard
+          ? getCriteriaIndexForCryptCard(criteriaCard.id, cryptCardId)
+          : null;
+        if (criteriaIdx === null) {
+          continue;
+        }
+        usedCards[cardIdx] = true;
+        criteriaIndices[cardIdx] = criteriaIdx;
+        cardIndicesByVerifier[verifierIdx] = cardIdx;
+        if (assignVerifier(verifierIdx + 1)) {
+          return true;
+        }
+        usedCards[cardIdx] = false;
+        criteriaIndices[cardIdx] = null;
+        cardIndicesByVerifier[verifierIdx] = -1;
+      }
+      return false;
+    };
+
+    if (assignVerifier(0)) {
+      simulationCardIndicesByVerifier = cardIndicesByVerifier;
     }
-    return null;
-  });
+  } else {
+    criteriaIndices = state.comments.map(({ criteriaCards }) => {
+      let criteriaOffset = 0;
+      for (const criteriaCard of criteriaCards) {
+        const criteriaIndex = criteriaCard.cryptCard
+          ? getCriteriaIndexForCryptCard(
+              criteriaCard.id,
+              criteriaCard.cryptCard.id
+            )
+          : null;
+        if (criteriaIndex !== null) {
+          return criteriaOffset + criteriaIndex;
+        }
+        criteriaOffset += criteriaCard.criteriaSlots;
+      }
+      return null;
+    });
+  }
   const simulationCriteriaIndices = criteriaIndices.every(
     (index): index is number => index !== null
   )
@@ -282,11 +333,15 @@ function getStandardSearchInput(
     cards,
     queries: getQueries(state),
     currentRound,
+    mode,
     answer: answer ?? null,
     simulationCriteriaIndices,
+    simulationCardIndicesByVerifier,
     optimizeExpectedValue,
     expectedValueNodeBudget,
     expectedValueTimeBudgetMs,
+    checkOptimizationNodeBudget,
+    checkOptimizationTimeBudgetMs,
   };
 }
 
@@ -296,7 +351,9 @@ export async function searchStandard(
   answer?: number[],
   optimizeExpectedValue = false,
   expectedValueNodeBudget = 0,
-  expectedValueTimeBudgetMs = 0
+  expectedValueTimeBudgetMs = 0,
+  checkOptimizationNodeBudget = 0,
+  checkOptimizationTimeBudgetMs = 0
 ): Promise<SearchResult> {
   return waitForWorker(
     {
@@ -306,7 +363,9 @@ export async function searchStandard(
         answer,
         optimizeExpectedValue,
         expectedValueNodeBudget,
-        expectedValueTimeBudgetMs
+        expectedValueTimeBudgetMs,
+        checkOptimizationNodeBudget,
+        checkOptimizationTimeBudgetMs
       ),
     },
     onProgress

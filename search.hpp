@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <queue>
 #include <unordered_map>
@@ -58,6 +59,7 @@ struct search_result_t {
   bool answerResult = false;
   bool expectedValueOptimized = false;
   bool expectedValueLimitReached = false;
+  bool checkOptimizationLimitReached = false;
   double expectedRounds = 0;
   double expectedChecks = 0;
   uint64_t nodes = 0;
@@ -70,27 +72,49 @@ struct standard_world_t {
 };
 
 const auto get_standard_worlds = [](const std::vector<card_t> &game,
-                                    const std::vector<query_t> &queries) {
+                                    const std::vector<query_t> &queries,
+                                    game_mode_t mode = game_mode_t::classic) {
   auto worlds = std::vector<standard_world_t>{};
-  cartesianProduct(game, [&worlds, &queries](
+  cartesianProduct(game, [&worlds, &queries, mode](
                              const std::vector<verifier_t> &combination) {
     if (!has_single_solution(combination) ||
         has_redundant_information(combination)) {
       return;
     }
 
-    for (const auto &query : queries) {
-      const auto verifierIdx = static_cast<size_t>(query.verifierIdx - 'A');
-      if (verifierIdx >= combination.size() ||
-          combination[verifierIdx].isValid(query.code) != query.result) {
-        return;
+    const auto addWorldIfLive = [&worlds, &queries, &combination](
+                                    const std::vector<uint8_t> &cardByVerifier) {
+      auto verifiers = std::vector<verifier_t>(combination.size());
+      for (size_t verifierIdx = 0; verifierIdx < combination.size();
+           verifierIdx += 1) {
+        verifiers[verifierIdx] = combination[cardByVerifier[verifierIdx]];
       }
+
+      for (const auto &query : queries) {
+        const auto verifierIdx = static_cast<size_t>(query.verifierIdx - 'A');
+        if (verifierIdx >= verifiers.size() ||
+            verifiers[verifierIdx].isValid(query.code) != query.result) {
+          return;
+        }
+      }
+
+      worlds.push_back(standard_world_t{
+          std::move(verifiers),
+          static_cast<uint8_t>(find_solution_idx(get_solution(combination))),
+      });
+    };
+
+    auto cardByVerifier = std::vector<uint8_t>(combination.size());
+    std::iota(cardByVerifier.begin(), cardByVerifier.end(), uint8_t{0});
+    if (mode != game_mode_t::nightmare) {
+      addWorldIfLive(cardByVerifier);
+      return;
     }
 
-    worlds.push_back(standard_world_t{
-        combination,
-        static_cast<uint8_t>(find_solution_idx(get_solution(combination))),
-    });
+    do {
+      addWorldIfLive(cardByVerifier);
+    } while (std::next_permutation(cardByVerifier.begin(),
+                                  cardByVerifier.end()));
   });
   return worlds;
 };
@@ -154,6 +178,14 @@ struct memo_result_t {
   action_t action{0, 0, false};
 };
 
+struct budget_bounds_t {
+  bool hasUnsolvable = false;
+  uint16_t maxUnsolvableChecks = 0;
+  bool hasSolvable = false;
+  uint16_t minSolvableChecks = std::numeric_limits<uint16_t>::max();
+  action_t solvableAction{0, 0, false};
+};
+
 struct expected_result_t {
   bool solvable = false;
   action_t action{0, 0, false};
@@ -170,7 +202,10 @@ public:
                    bool optimizeExpectedValue,
                    std::optional<std::vector<verifier_t>> simulationVerifiers,
                    uint64_t expectedValueNodeBudget,
-                   uint32_t expectedValueTimeBudgetMs)
+                   uint32_t expectedValueTimeBudgetMs,
+                   bool useVerifierSymmetry,
+                   uint64_t checkOptimizationNodeBudget,
+                   uint32_t checkOptimizationTimeBudgetMs)
       : worlds_(worlds), numVerifiers_(numVerifiers),
         initialRound_(initialRound),
         progressCallback_(std::move(progressCallback)),
@@ -179,6 +214,9 @@ public:
         simulationVerifiers_(std::move(simulationVerifiers)),
         expectedValueNodeBudget_(expectedValueNodeBudget),
         expectedValueTimeBudgetMs_(expectedValueTimeBudgetMs),
+        useVerifierSymmetry_(useVerifierSymmetry),
+        checkOptimizationNodeBudget_(checkOptimizationNodeBudget),
+        checkOptimizationTimeBudgetMs_(checkOptimizationTimeBudgetMs),
         wordCount_((worlds.size() + 63) / 64) {
     atomicGreenMasks_.resize(NUM_CODES * numVerifiers_,
                              state_t(wordCount_, 0));
@@ -195,6 +233,9 @@ public:
           }
         }
       }
+    }
+    if (useVerifierSymmetry_) {
+      initializeVerifierSwaps();
     }
   }
 
@@ -255,14 +296,59 @@ public:
     auto plan = memo_result_t{};
     const auto minimumScoreChecks =
         static_cast<uint16_t>(minimumChecks(result.liveCodes));
-    for (uint16_t checks = minimumScoreChecks; checks <= maxChecks;
-         checks += 1) {
-      targetChecks_ = checks;
+    if (checkOptimizationNodeBudget_ > 0 ||
+        checkOptimizationTimeBudgetMs_ > 0) {
+      targetChecks_ = maxChecks;
       reportProgress();
       plan = canSolveWithinBudgets(root, initialRound_, optimalRoundCount,
-                                   checks);
-      if (plan.solvable) {
-        break;
+                                   maxChecks);
+      if (!plan.solvable) {
+        result.nodes = nodes_;
+        result.memoStates = memoStateCount();
+        return result;
+      }
+
+      checkOptimizationSearchActive_ = true;
+      checkOptimizationNodeLimit_ =
+          checkOptimizationNodeBudget_ == 0 ||
+                  checkOptimizationNodeBudget_ >
+                  std::numeric_limits<uint64_t>::max() - nodes_
+              ? std::numeric_limits<uint64_t>::max()
+              : nodes_ + checkOptimizationNodeBudget_;
+      checkOptimizationStarted_ = std::chrono::steady_clock::now();
+      checkOptimizationCallsUntilTimeCheck_ = 1;
+      auto foundTighterPlan = false;
+      for (uint16_t checks = minimumScoreChecks; checks < maxChecks;
+           checks += 1) {
+        targetChecks_ = checks;
+        reportProgress();
+        const auto candidatePlan = canSolveWithinBudgets(
+            root, initialRound_, optimalRoundCount, checks);
+        if (checkOptimizationBudgetExhausted()) {
+          break;
+        }
+        if (candidatePlan.solvable) {
+          plan = candidatePlan;
+          foundTighterPlan = true;
+          break;
+        }
+      }
+      checkOptimizationSearchActive_ = false;
+      result.checkOptimizationLimitReached =
+          checkOptimizationLimitReached_;
+      if (checkOptimizationLimitReached_ || !foundTighterPlan) {
+        targetChecks_ = maxChecks;
+      }
+    } else {
+      for (uint16_t checks = minimumScoreChecks; checks <= maxChecks;
+           checks += 1) {
+        targetChecks_ = checks;
+        reportProgress();
+        plan = canSolveWithinBudgets(root, initialRound_, optimalRoundCount,
+                                     checks);
+        if (plan.solvable) {
+          break;
+        }
       }
     }
     if (!plan.solvable) {
@@ -270,7 +356,7 @@ public:
       result.memoStates = memoStateCount();
       return result;
     }
-    if (optimizeExpectedValue_) {
+    if (optimizeExpectedValue_ && !checkOptimizationLimitReached_) {
       expectedValueSearchActive_ = true;
       expectedValueNodeLimit_ =
           expectedValueNodeBudget_ == 0 ||
@@ -463,15 +549,33 @@ private:
 
   std::vector<candidate_t> getCandidates(
       const state_t &state, const round_context_t &round,
-      uint8_t rounds) const {
+      uint8_t rounds) {
     auto candidates = std::vector<candidate_t>{};
     candidates.reserve(NUM_CODES * numVerifiers_ + numVerifiers_);
+    const auto symmetryPairs = getVerifierSymmetryPairs(state);
+
+    const auto hasEquivalentEarlierVerifier =
+        [this, symmetryPairs](uint8_t verifierIdx, uint8_t eligibleMask) {
+          for (uint8_t otherIdx = 0; otherIdx < verifierIdx; otherIdx += 1) {
+            if ((eligibleMask & (uint8_t{1} << otherIdx)) != 0 &&
+                (symmetryPairs &
+                 (uint64_t{1} << (otherIdx * numVerifiers_ + verifierIdx))) !=
+                    0) {
+              return true;
+            }
+          }
+          return false;
+        };
 
     if (remainingChecks(round) > 0) {
+      const auto eligibleMask = static_cast<uint8_t>(
+          ((uint16_t{1} << numVerifiers_) - 1) &
+          ~round.checkedVerifierMask);
       for (uint8_t verifierIdx = 0; verifierIdx < numVerifiers_;
            verifierIdx += 1) {
         if ((round.checkedVerifierMask &
-             (uint8_t{1} << verifierIdx)) == 0) {
+             (uint8_t{1} << verifierIdx)) == 0 &&
+            !hasEquivalentEarlierVerifier(verifierIdx, eligibleMask)) {
           auto candidate = makeCandidate(
               state, action_t{round.codeIdx, verifierIdx, false});
           if (candidate.greenWorlds > 0 && candidate.redWorlds > 0) {
@@ -482,9 +586,14 @@ private:
     }
 
     if (rounds > 0) {
-      for (uint8_t codeIdx = 0; codeIdx < NUM_CODES; codeIdx += 1) {
+      const auto eligibleMask = static_cast<uint8_t>(
+          (uint16_t{1} << numVerifiers_) - 1);
+      for (const auto codeIdx : getDistinctCodeIndices(state)) {
         for (uint8_t verifierIdx = 0; verifierIdx < numVerifiers_;
              verifierIdx += 1) {
+          if (hasEquivalentEarlierVerifier(verifierIdx, eligibleMask)) {
+            continue;
+          }
           auto candidate = makeCandidate(
               state, action_t{codeIdx, verifierIdx, true});
           if (candidate.greenWorlds > 0 && candidate.redWorlds > 0) {
@@ -513,6 +622,140 @@ private:
       return leftWorldScore < rightWorldScore;
     });
     return candidates;
+  }
+
+  const std::vector<uint8_t> &getDistinctCodeIndices(const state_t &state) {
+    const auto stateId = getStateId(state);
+    const auto memoized = distinctCodeMemo_.find(stateId);
+    if (memoized != distinctCodeMemo_.end()) {
+      return memoized->second;
+    }
+
+    auto representatives = std::vector<uint8_t>{};
+    auto codesByHash = std::unordered_map<size_t, std::vector<uint8_t>>{};
+    const auto equivalent = [this, &state](uint8_t first, uint8_t second) {
+      for (size_t verifierIdx = 0; verifierIdx < numVerifiers_;
+           verifierIdx += 1) {
+        const auto &firstMask =
+            atomicGreenMasks_[first * numVerifiers_ + verifierIdx];
+        const auto &secondMask =
+            atomicGreenMasks_[second * numVerifiers_ + verifierIdx];
+        for (size_t wordIdx = 0; wordIdx < wordCount_; wordIdx += 1) {
+          if ((state[wordIdx] &
+               (firstMask[wordIdx] ^ secondMask[wordIdx])) != 0) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
+    for (uint8_t codeIdx = 0; codeIdx < NUM_CODES; codeIdx += 1) {
+      auto hash = size_t{0x9e3779b9};
+      for (size_t verifierIdx = 0; verifierIdx < numVerifiers_;
+           verifierIdx += 1) {
+        const auto &greenMask =
+            atomicGreenMasks_[codeIdx * numVerifiers_ + verifierIdx];
+        for (size_t wordIdx = 0; wordIdx < wordCount_; wordIdx += 1) {
+          hash ^= std::hash<uint64_t>{}(state[wordIdx] & greenMask[wordIdx]) +
+                  size_t{0x9e3779b9} + (hash << 6) + (hash >> 2);
+        }
+      }
+      auto &sameHash = codesByHash[hash];
+      const auto duplicate = std::any_of(
+          sameHash.begin(), sameHash.end(),
+          [&equivalent, codeIdx](uint8_t other) {
+            return equivalent(codeIdx, other);
+          });
+      if (!duplicate) {
+        sameHash.push_back(codeIdx);
+        representatives.push_back(codeIdx);
+      }
+    }
+
+    return distinctCodeMemo_.try_emplace(stateId, std::move(representatives))
+        .first->second;
+  }
+
+  void initializeVerifierSwaps() {
+    const auto noWorld = std::numeric_limits<size_t>::max();
+    auto worldIndices = std::unordered_map<std::string, size_t>{};
+    const auto worldKey = [this](const standard_world_t &world, size_t first,
+                                 size_t second) {
+      auto key = std::string{};
+      key.push_back(static_cast<char>(world.solutionIdx));
+      for (size_t verifierIdx = 0; verifierIdx < numVerifiers_;
+           verifierIdx += 1) {
+        const auto sourceIdx = verifierIdx == first   ? second
+                               : verifierIdx == second ? first
+                                                       : verifierIdx;
+        key.append(world.verifiers[sourceIdx].name);
+        key.push_back('\0');
+      }
+      return key;
+    };
+
+    for (size_t worldIdx = 0; worldIdx < worlds_.size(); worldIdx += 1) {
+      worldIndices.try_emplace(worldKey(worlds_[worldIdx], numVerifiers_,
+                                        numVerifiers_),
+                               worldIdx);
+    }
+    verifierSwapWorldIndices_.resize(numVerifiers_ * numVerifiers_);
+    for (size_t first = 0; first < numVerifiers_; first += 1) {
+      for (size_t second = first + 1; second < numVerifiers_; second += 1) {
+        auto &swaps =
+            verifierSwapWorldIndices_[first * numVerifiers_ + second];
+        swaps.resize(worlds_.size(), noWorld);
+        for (size_t worldIdx = 0; worldIdx < worlds_.size(); worldIdx += 1) {
+          const auto swapped =
+              worldIndices.find(worldKey(worlds_[worldIdx], first, second));
+          if (swapped != worldIndices.end()) {
+            swaps[worldIdx] = swapped->second;
+          }
+        }
+      }
+    }
+  }
+
+  uint64_t getVerifierSymmetryPairs(const state_t &state) {
+    if (!useVerifierSymmetry_) {
+      return 0;
+    }
+    const auto stateId = getStateId(state);
+    const auto memoized = verifierSymmetryMemo_.find(stateId);
+    if (memoized != verifierSymmetryMemo_.end()) {
+      return memoized->second;
+    }
+
+    auto result = uint64_t{0};
+    const auto noWorld = std::numeric_limits<size_t>::max();
+    for (size_t first = 0; first < numVerifiers_; first += 1) {
+      for (size_t second = first + 1; second < numVerifiers_; second += 1) {
+        const auto &swaps =
+            verifierSwapWorldIndices_[first * numVerifiers_ + second];
+        auto symmetric = true;
+        for (size_t worldIdx = 0; worldIdx < worlds_.size(); worldIdx += 1) {
+          const auto isLive =
+              (state[worldIdx / 64] &
+               (uint64_t{1} << (worldIdx % 64))) != 0;
+          if (!isLive) {
+            continue;
+          }
+          const auto swappedIdx = swaps[worldIdx];
+          if (swappedIdx == noWorld ||
+              (state[swappedIdx / 64] &
+               (uint64_t{1} << (swappedIdx % 64))) == 0) {
+            symmetric = false;
+            break;
+          }
+        }
+        if (symmetric) {
+          result |= uint64_t{1} << (first * numVerifiers_ + second);
+        }
+      }
+    }
+    verifierSymmetryMemo_[stateId] = result;
+    return result;
   }
 
   round_context_t nextRound(const round_context_t &round,
@@ -611,6 +854,9 @@ private:
   memo_result_t canSolveWithinBudgets(const state_t &state,
                                       const round_context_t &round,
                                       uint8_t rounds, uint16_t checks) {
+    if (checkOptimizationBudgetExhausted()) {
+      return memo_result_t{};
+    }
     nodes_ += 1;
     maybeReportProgress();
 
@@ -624,6 +870,16 @@ private:
     }
 
     const auto node = makeNode(state, round);
+    auto &boundsMemo = scoreBudgetBounds_[rounds];
+    const auto bounds = boundsMemo.find(node);
+    if (bounds != boundsMemo.end() && bounds->second.hasUnsolvable &&
+        checks <= bounds->second.maxUnsolvableChecks) {
+      return memo_result_t{};
+    }
+    if (bounds != boundsMemo.end() && bounds->second.hasSolvable &&
+        checks >= bounds->second.minSolvableChecks) {
+      return memo_result_t{true, bounds->second.solvableAction};
+    }
     const auto limitKey =
         (static_cast<uint32_t>(rounds) << 16) |
         static_cast<uint32_t>(checks);
@@ -649,19 +905,40 @@ private:
         std::swap(first, second);
       }
 
-      if (canSolveWithinBudgets(*first, childRound, childRounds,
-                                childChecks)
-              .solvable &&
-          canSolveWithinBudgets(*second, childRound, childRounds,
-                                childChecks)
-              .solvable) {
+      const auto firstResult = canSolveWithinBudgets(
+          *first, childRound, childRounds, childChecks);
+      if (checkOptimizationBudgetExhausted()) {
+        return memo_result_t{};
+      }
+      const auto secondResult =
+          firstResult.solvable
+              ? canSolveWithinBudgets(*second, childRound, childRounds,
+                                      childChecks)
+              : memo_result_t{};
+      if (checkOptimizationBudgetExhausted()) {
+        return memo_result_t{};
+      }
+      if (firstResult.solvable && secondResult.solvable) {
         const auto result = memo_result_t{true, candidate.action};
+        auto &updatedBounds = scoreBudgetBounds_[rounds][node];
+        updatedBounds.hasSolvable = true;
+        if (checks < updatedBounds.minSolvableChecks) {
+          updatedBounds.minSolvableChecks = checks;
+          updatedBounds.solvableAction = candidate.action;
+        }
         memo[node] = result;
         return result;
       }
     }
 
+    if (checkOptimizationBudgetExhausted()) {
+      return memo_result_t{};
+    }
     const auto result = memo_result_t{};
+    auto &updatedBounds = scoreBudgetBounds_[rounds][node];
+    updatedBounds.hasUnsolvable = true;
+    updatedBounds.maxUnsolvableChecks =
+        std::max(updatedBounds.maxUnsolvableChecks, checks);
     memo[node] = result;
     return result;
   }
@@ -762,6 +1039,9 @@ private:
     if (!expectedValueSearchActive_) {
       return false;
     }
+    if (expectedValueLimitReached_) {
+      return true;
+    }
     if (nodes_ >= expectedValueNodeLimit_) {
       expectedValueLimitReached_ = true;
       return true;
@@ -771,6 +1051,31 @@ private:
       nextExpectedValueTimeCheckNode_ = nodes_ + 16384;
       if (std::chrono::steady_clock::now() >= expectedValueDeadline_) {
         expectedValueLimitReached_ = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool checkOptimizationBudgetExhausted() {
+    if (!checkOptimizationSearchActive_) {
+      return false;
+    }
+    if (checkOptimizationLimitReached_) {
+      return true;
+    }
+    if (nodes_ >= checkOptimizationNodeLimit_) {
+      checkOptimizationLimitReached_ = true;
+      return true;
+    }
+    if (checkOptimizationTimeBudgetMs_ > 0 &&
+        --checkOptimizationCallsUntilTimeCheck_ == 0) {
+      checkOptimizationCallsUntilTimeCheck_ = 16384;
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - checkOptimizationStarted_);
+      if (elapsed.count() >= checkOptimizationTimeBudgetMs_) {
+        checkOptimizationLimitReached_ = true;
         return true;
       }
     }
@@ -819,11 +1124,20 @@ private:
   std::optional<std::vector<verifier_t>> simulationVerifiers_;
   uint64_t expectedValueNodeBudget_;
   uint32_t expectedValueTimeBudgetMs_;
+  bool useVerifierSymmetry_;
+  uint64_t checkOptimizationNodeBudget_;
+  uint32_t checkOptimizationTimeBudgetMs_;
   uint64_t expectedValueNodeLimit_ = std::numeric_limits<uint64_t>::max();
   uint64_t nextExpectedValueTimeCheckNode_ = 0;
   std::chrono::steady_clock::time_point expectedValueDeadline_{};
   bool expectedValueSearchActive_ = false;
   bool expectedValueLimitReached_ = false;
+  uint64_t checkOptimizationNodeLimit_ =
+      std::numeric_limits<uint64_t>::max();
+  uint32_t checkOptimizationCallsUntilTimeCheck_ = 1;
+  std::chrono::steady_clock::time_point checkOptimizationStarted_{};
+  bool checkOptimizationSearchActive_ = false;
+  bool checkOptimizationLimitReached_ = false;
   size_t wordCount_;
   std::vector<state_t> atomicGreenMasks_;
   std::unordered_map<
@@ -835,11 +1149,18 @@ private:
       std::unordered_map<node_key_t, memo_result_t, node_hash_t>>
       scoreFeasibilityMemo_;
   std::unordered_map<
+      uint8_t,
+      std::unordered_map<node_key_t, budget_bounds_t, node_hash_t>>
+      scoreBudgetBounds_;
+  std::unordered_map<
       uint32_t,
       std::unordered_map<node_key_t, expected_result_t, node_hash_t>>
       expectedValueMemo_;
   std::unordered_map<state_t, size_t, state_hash_t> stateIds_;
   std::unordered_map<size_t, uint64_t> expectedCheckLowerBoundMemo_;
+  std::vector<std::vector<size_t>> verifierSwapWorldIndices_;
+  std::unordered_map<size_t, uint64_t> verifierSymmetryMemo_;
+  std::unordered_map<size_t, std::vector<uint8_t>> distinctCodeMemo_;
   uint64_t nodes_ = 0;
   uint8_t targetRounds_ = 0;
   uint16_t targetChecks_ = 0;
@@ -860,8 +1181,14 @@ const auto search_standard = [](const std::vector<card_t> &game,
                                    simulationCriteriaIndices = std::nullopt,
                                uint64_t expectedValueNodeBudget = 0,
                                uint32_t expectedValueTimeBudgetMs = 0,
-                               bool oneShotWorker = false) {
-  const auto worlds = get_standard_worlds(game, queries);
+                               bool oneShotWorker = false,
+                               game_mode_t mode = game_mode_t::classic,
+                               std::optional<std::vector<uint8_t>>
+                                   simulationCardIndicesByVerifier =
+                                       std::nullopt,
+                               uint64_t checkOptimizationNodeBudget = 0,
+                               uint32_t checkOptimizationTimeBudgetMs = 0) {
+  const auto worlds = get_standard_worlds(game, queries, mode);
   auto answerIdx = std::optional<uint8_t>{};
   if (answer) {
     answerIdx = static_cast<uint8_t>(
@@ -871,18 +1198,37 @@ const auto search_standard = [](const std::vector<card_t> &game,
   auto simulationVerifiers = std::optional<std::vector<verifier_t>>{};
   if (simulationCriteriaIndices &&
       simulationCriteriaIndices->size() == game.size()) {
-    auto verifiers = std::vector<verifier_t>{};
-    verifiers.reserve(game.size());
+    auto selectedByCard = std::vector<verifier_t>{};
+    selectedByCard.reserve(game.size());
     for (size_t i = 0; i < game.size(); i += 1) {
       const auto criteriaIdx = (*simulationCriteriaIndices)[i];
       if (criteriaIdx >= game[i].size()) {
-        verifiers.clear();
+        selectedByCard.clear();
         break;
       }
-      verifiers.push_back(game[i][criteriaIdx]);
+      selectedByCard.push_back(game[i][criteriaIdx]);
     }
-    if (verifiers.size() == game.size()) {
-      simulationVerifiers = std::move(verifiers);
+    if (selectedByCard.size() == game.size()) {
+      if (mode == game_mode_t::nightmare &&
+          simulationCardIndicesByVerifier &&
+          simulationCardIndicesByVerifier->size() == game.size()) {
+        auto verifiers = std::vector<verifier_t>{};
+        auto usedCards = std::vector<bool>(game.size(), false);
+        verifiers.reserve(game.size());
+        for (const auto cardIdx : *simulationCardIndicesByVerifier) {
+          if (cardIdx >= game.size() || usedCards[cardIdx]) {
+            verifiers.clear();
+            break;
+          }
+          usedCards[cardIdx] = true;
+          verifiers.push_back(selectedByCard[cardIdx]);
+        }
+        if (verifiers.size() == game.size()) {
+          simulationVerifiers = std::move(verifiers);
+        }
+      } else if (mode != game_mode_t::nightmare) {
+        simulationVerifiers = std::move(selectedByCard);
+      }
     }
   }
   if (!answerIdx && simulationVerifiers) {
@@ -894,7 +1240,9 @@ const auto search_standard = [](const std::vector<card_t> &game,
   auto search = std::make_unique<search_detail::standard_search_t>(
       worlds, game.size(), initialRound, std::move(progressCallback),
       answerIdx, optimizeExpectedValue, std::move(simulationVerifiers),
-      expectedValueNodeBudget, expectedValueTimeBudgetMs);
+      expectedValueNodeBudget, expectedValueTimeBudgetMs,
+      mode == game_mode_t::nightmare, checkOptimizationNodeBudget,
+      checkOptimizationTimeBudgetMs);
   const auto result = search->run();
   if (oneShotWorker) {
     // The worker is terminated after this result. Let that release its linear

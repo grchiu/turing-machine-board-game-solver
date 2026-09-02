@@ -165,6 +165,14 @@ export const commentsSlice = createSlice({
         }
       }
     },
+    applyPossibleLetters: (state, action: PayloadAction<string[][]>) => {
+      for (let commentIdx = 0; commentIdx < state.length; commentIdx += 1) {
+        const possibleLetters = new Set(action.payload[commentIdx] || []);
+        for (const letter of state[commentIdx].letters) {
+          letter.isIrrelevant = !possibleLetters.has(letter.letter);
+        }
+      }
+    },
   },
 });
 

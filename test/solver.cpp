@@ -350,3 +350,30 @@ TEST_CASE("expected-value limit returns the harder five-verifier plan") {
   CHECK(result.expectedValueOptimized == false);
   CHECK(result.expectedValueLimitReached == true);
 }
+
+TEST_CASE("active search supports Nightmare verifier assignments") {
+  auto game = std::vector<card_t>{};
+  for (const auto cardId : {2, 16, 23, 48}) {
+    game.push_back(all_cards[cardId]);
+  }
+
+  const auto worlds =
+      get_standard_worlds(game, {}, game_mode_t::nightmare);
+  CHECK(worlds.size() == 192);
+
+  // #I48 M53: A->23, B->16, C->48, D->2, with solution 151.
+  const auto result = search_standard(
+      game, {}, {}, {}, std::nullopt, false,
+      std::vector<uint8_t>{0, 1, 2, 4}, 0, 0, false,
+      game_mode_t::nightmare, std::vector<uint8_t>{2, 1, 3, 0}, 1);
+
+  REQUIRE(result.status == search_status_t::recommendation);
+  CHECK(result.liveWorlds == 192);
+  CHECK(result.solutionKnown == true);
+  CHECK(result.solution == code_t{1, 5, 1});
+  CHECK(result.answerMatchesLiveWorld == true);
+  CHECK(result.answerResultKnown == true);
+  CHECK(result.worstCaseRounds == 3);
+  CHECK(result.worstCaseChecks == 9);
+  CHECK(result.checkOptimizationLimitReached == true);
+}

@@ -23,6 +23,8 @@ const initialProgress: SearchProgress = {
 const OPTIMIZE_EXPECTED_VALUE = true;
 const EXPECTED_VALUE_NODE_BUDGET = 30_000_000;
 const EXPECTED_VALUE_TIME_BUDGET_MS = 30_000;
+const NIGHTMARE_CHECK_NODE_BUDGET = 30_000_000;
+const NIGHTMARE_CHECK_TIME_BUDGET_MS = 30_000;
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value);
@@ -83,9 +85,8 @@ type ActiveSearchProps = {
 export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
   const dispatch = useAppDispatch();
   const state = useAppSelector((currentState) => currentState);
-  const isStandardMode =
+  const isSearchSupported =
     state.comments.length > 0 &&
-    !state.comments[0].nightmare &&
     state.comments.every(
       ({ criteriaCards }) =>
         criteriaCards.length === 1 || criteriaCards.length === 2
@@ -141,7 +142,9 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
         undefined,
         OPTIMIZE_EXPECTED_VALUE,
         EXPECTED_VALUE_NODE_BUDGET,
-        EXPECTED_VALUE_TIME_BUDGET_MS
+        EXPECTED_VALUE_TIME_BUDGET_MS,
+        state.comments[0].nightmare ? NIGHTMARE_CHECK_NODE_BUDGET : 0,
+        state.comments[0].nightmare ? NIGHTMARE_CHECK_TIME_BUDGET_MS : 0
       );
       if (currentStateKey.current === stateKeyAtStart) {
         setResult(searchResult);
@@ -188,7 +191,13 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
                 answerCode,
                 OPTIMIZE_EXPECTED_VALUE,
                 EXPECTED_VALUE_NODE_BUDGET,
-                EXPECTED_VALUE_TIME_BUDGET_MS
+                EXPECTED_VALUE_TIME_BUDGET_MS,
+                store.getState().comments[0].nightmare
+                  ? NIGHTMARE_CHECK_NODE_BUDGET
+                  : 0,
+                store.getState().comments[0].nightmare
+                  ? NIGHTMARE_CHECK_TIME_BUDGET_MS
+                  : 0
               );
         if (!searchResult.answerMatchesLiveWorld) {
           setError(`${answer} is not a live answer for these checks.`);
@@ -260,7 +269,7 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
           variant="contained"
           size="large"
           fullWidth
-          disabled={!isStandardMode || isSearching}
+          disabled={!isSearchSupported || isSearching}
           startIcon={
             isSearching ? (
               <CircularProgress size={20} color="inherit" />
@@ -289,12 +298,12 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
           }}
           aria-live="polite"
         >
-          {!isStandardMode && (
+          {!isSearchSupported && (
             <Typography variant="body2">
-              Nightmare puzzles are not supported yet.
+              This puzzle setup is not supported.
             </Typography>
           )}
-          {isStandardMode && !isSearching && !result && !error && (
+          {isSearchSupported && !isSearching && !result && !error && (
             <Typography variant="body2">
               Ready to find the next verifier check.
             </Typography>
@@ -362,6 +371,11 @@ export function ActiveSearch({ onSimulationStart }: ActiveSearchProps) {
               {result.expectedValueLimitReached && (
                 <Typography variant="body2">
                   Average tie-break capped; worst case remains optimal.
+                </Typography>
+              )}
+              {result.checkOptimizationLimitReached && (
+                <Typography variant="body2">
+                  Check tie-break capped; round count remains optimal.
                 </Typography>
               )}
               <Typography variant="caption" color="text.secondary">

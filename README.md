@@ -25,7 +25,8 @@ Other useful links:
 
 ## Changes in This Fork
 
-This fork adds an active strategy search for classic and extreme puzzles.
+This fork adds an active strategy search for classic, extreme, and nightmare
+puzzles.
 Instead of only checking deductions entered by the player, the solver can
 recommend the next code and verifier that produce the best guaranteed path to
 a solution.
@@ -45,8 +46,7 @@ The main additions are:
   puzzle without displaying the hidden solution in advance.
 - Updated WASM bindings, worker messages, tests, and GitHub Pages deployment.
 
-Active search and simulation support classic and extreme puzzles. Nightmare
-puzzles remain available through the original passive deduction tools.
+Active search, simulation, and live deductions support all three game modes.
 
 ## Minimax Search
 
@@ -54,9 +54,10 @@ puzzles remain available through the original passive deduction tools.
 
 A **world** is one possible assignment of a hidden criterion to every verifier
 card. In extreme mode, each verifier's choices are drawn from both of its
-displayed criteria cards, since either card can be the decoy. Before searching,
-the solver enumerates the Cartesian product of those choices and keeps only
-worlds that:
+displayed criteria cards, since either card can be the decoy. In nightmare
+mode, the criteria cards form an unordered pool, so the solver also enumerates
+every one-to-one assignment of those cards to the visible verifier letters.
+Before searching, the solver keeps only worlds that:
 
 1. Produce exactly one solution code.
 2. Do not contain a verifier made redundant by all the others.
@@ -110,6 +111,13 @@ either limit falls back to the already proven optimal worst-case plan. Live
 verifier-category updates can be switched on or off with the **Auto
 Deductions** toolbar button.
 
+Nightmare's larger world set makes proving the secondary verifier-check optimum
+substantially more expensive. The minimum worst-case round count is still
+proved without a limit. The subsequent check-count tie-break is bounded by
+`NIGHTMARE_CHECK_NODE_BUDGET` and `NIGHTMARE_CHECK_TIME_BUDGET_MS`. If either
+limit is reached, the solver returns a valid plan at the proven minimum round
+count and reports that only the check tie-break was capped.
+
 ### Search Strategy
 
 The implementation uses iterative deepening and memoized feasibility searches:
@@ -129,6 +137,11 @@ The implementation uses iterative deepening and memoized feasibility searches:
 Candidate actions are ordered to try continuing the current round first, then
 actions with the smallest worst branch by code count and world count. This does
 not change optimality, but it tends to find a proof sooner.
+
+Nightmare search also removes exact verifier-label symmetries from each state
+and tests only one representative of codes that produce identical results in
+every live world. These reductions preserve every distinct outcome while
+avoiding repeated searches of equivalent branches.
 
 Memoization keys include the live-world bitset and the complete round context.
 Separate memo tables are maintained for round feasibility, combined
@@ -203,9 +216,9 @@ CI=true npm test -- --runInBand
 
 - [x] Initial deductions before the game
 - [x] Deductions based on machine answers
-- [x] Classic and extreme passive solving
+- [x] Classic, extreme, and nightmare passive solving
 - [x] Interactive frontend with a WASM solver and web worker
-- [x] Active classic and extreme-puzzle strategy search
+- [x] Active classic, extreme, and nightmare strategy search
 - [x] Adaptive round and verifier-check minimax
 - [x] Expected-value tie-breaking
 - [x] Live verifier-category deductions

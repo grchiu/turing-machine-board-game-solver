@@ -175,16 +175,29 @@ extern "C" EMSCRIPTEN_KEEPALIVE int search_standard_wasm(char *input,
     }
     const auto optimizeExpectedValue =
         data.value("optimizeExpectedValue", false);
+    const auto mode = static_cast<game_mode_t>(data.value<uint8_t>("mode", 0));
     const auto expectedValueNodeBudget =
         data.value<uint64_t>("expectedValueNodeBudget", 0);
     const auto expectedValueTimeBudgetMs =
         data.value<uint32_t>("expectedValueTimeBudgetMs", 0);
+    const auto checkOptimizationNodeBudget =
+        data.value<uint64_t>("checkOptimizationNodeBudget", 0);
+    const auto checkOptimizationTimeBudgetMs =
+        data.value<uint32_t>("checkOptimizationTimeBudgetMs", 0);
     auto simulationCriteriaIndices =
         std::optional<std::vector<uint8_t>>{};
     if (data.contains("simulationCriteriaIndices") &&
         !data["simulationCriteriaIndices"].is_null()) {
       simulationCriteriaIndices =
           data["simulationCriteriaIndices"].get<std::vector<uint8_t>>();
+    }
+    auto simulationCardIndicesByVerifier =
+        std::optional<std::vector<uint8_t>>{};
+    if (data.contains("simulationCardIndicesByVerifier") &&
+        !data["simulationCardIndicesByVerifier"].is_null()) {
+      simulationCardIndicesByVerifier =
+          data["simulationCardIndicesByVerifier"]
+              .get<std::vector<uint8_t>>();
     }
     auto initialRound = round_context_t{};
     if (!data["currentRound"].is_null()) {
@@ -208,7 +221,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int search_standard_wasm(char *input,
                                progress.optimizingExpectedValue);
         },
         answer, optimizeExpectedValue, simulationCriteriaIndices,
-        expectedValueNodeBudget, expectedValueTimeBudgetMs, true);
+        expectedValueNodeBudget, expectedValueTimeBudgetMs, true, mode,
+        simulationCardIndicesByVerifier, checkOptimizationNodeBudget,
+        checkOptimizationTimeBudgetMs);
 
     auto outputJson = json();
     outputJson["status"] = static_cast<uint8_t>(result.status);
@@ -231,6 +246,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int search_standard_wasm(char *input,
     outputJson["expectedValueOptimized"] = result.expectedValueOptimized;
     outputJson["expectedValueLimitReached"] =
         result.expectedValueLimitReached;
+    outputJson["checkOptimizationLimitReached"] =
+        result.checkOptimizationLimitReached;
     outputJson["expectedRounds"] = result.expectedRounds;
     outputJson["expectedChecks"] = result.expectedChecks;
     outputJson["nodes"] = result.nodes;
