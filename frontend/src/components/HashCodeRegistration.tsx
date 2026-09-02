@@ -26,7 +26,9 @@ const HashCodeRegistration: FC = () => {
   const onSubmit = () => {
     dispatch(registrationActions.fetch());
 
-    fetch(`${process.env.REACT_APP_API_END_POINT}?h=${registration.hash}`)
+    const searchParams = new URLSearchParams({ h: registration.hash });
+
+    fetch(`${process.env.REACT_APP_API_END_POINT}?${searchParams}`)
       .then((response) => response.json())
       .then((data: any) => {
         dispatch(roundsActions.reset());
@@ -83,14 +85,6 @@ const HashCodeRegistration: FC = () => {
           {registration.hash} Game ID not found!
         </Alert>
       </Snackbar>
-      {registration.status === "new" && (
-        <Box pt={0.5} pb={1}>
-          <Alert severity="warning">
-            Starting a game by hashcode might be broken at the moment. If you
-            encounter an error, please use the manual method.
-          </Alert>
-        </Box>
-      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();
