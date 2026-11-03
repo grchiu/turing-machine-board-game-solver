@@ -1,5 +1,8 @@
 # Turing Machine Board Game Solver
 
+For a fresh checkout or agent context, start with the
+[local development and configuration guide](docs/BOOTSTRAP.md).
+
 An interactive deduction sheet and solver for the board game
 [Turing Machine](https://boardgamegeek.com/boardgame/356123/turing-machine).
 
