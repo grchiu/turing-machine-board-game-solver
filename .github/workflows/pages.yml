@@ -34,13 +34,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: ./frontend/package-lock.json
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Install dependencies
-        run: cd frontend && npm install --legacy-peer-deps && npm run build
+        run: cd frontend && npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund && npm run build
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

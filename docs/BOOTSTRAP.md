@@ -78,3 +78,15 @@ round guarantees and bounded check-count/expected-value tie-breaks are distinct;
 do not describe capped optimization as proof of every tie-break. Puzzle
 verification data may be used to simulate answers, but must not leak hidden
 criteria into the planner. Preserve upstream credits and licensing.
+
+## Combined dependency validation
+
+Security updates to the overlapping frontend lockfile are resolved together and
+validated in one pull request before a single main integration/Pages deployment.
+PR validation runs the native solver tests, frontend Jest suite, production build
+and `node scripts/check-built-wasm.cjs`. Dependency installation uses the exact
+lock with `--legacy-peer-deps --ignore-scripts`; WASM remains the checked-in build
+unless solver source changes. Pages uses Node22 and that same locked install.
+Do not use `npm audit fix --force`: its suggested react-scripts0.0.0 replacement
+removes the working build tooling. Remaining incompatible toolchain advisories
+need a reviewed build-tool migration rather than an automatic forced downgrade.
