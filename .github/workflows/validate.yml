@@ -1,0 +1,31 @@
+name: Validate combined changes
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: validate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Native solver regressions
+        run: make doctest && ./test.out
+        timeout-minutes: 3
+      - name: Install exact frontend dependencies
+        run: npm --prefix frontend ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+        timeout-minutes: 3
+      - name: Frontend regressions and production assets
+        run: |
+          CI=true npm --prefix frontend test -- --watch=false --runInBand
+          npm --prefix frontend run build
+          node scripts/check-built-wasm.cjs
+        timeout-minutes: 3
