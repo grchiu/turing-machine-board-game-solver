@@ -90,3 +90,11 @@ unless solver source changes. Pages uses Node22 and that same locked install.
 Do not use `npm audit fix --force`: its suggested react-scripts0.0.0 replacement
 removes the working build tooling. Remaining incompatible toolchain advisories
 need a reviewed build-tool migration rather than an automatic forced downgrade.
+
+### Scoped JSONPath security override
+
+`jsonpath@1.3.0` pins the vulnerable Underscore1.13.6 exactly. The frontend
+uses a version-scoped npm override to install the same-minor patched1.13.8.
+This applies only to that JSONPath release; remove it when JSONPath is upgraded
+or the CRA toolchain is retired. Validate JSONPath selection/recursive queries,
+frontend tests and the production build when changing this override.
